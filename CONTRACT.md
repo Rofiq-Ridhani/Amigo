@@ -1130,6 +1130,37 @@ MESSAGE_EDIT_WINDOW_MINUTES=15
 MESSAGE_HARD_DELETE_MINUTES=5
 ```
 
+### 12.1 Laradock & Local Domain (Amigo.test)
+
+> **Sumber kebenaran infra lokal.** Docker HARUS nyala, nginx Laradock yang serve `Amigo.test`.
+
+| Item | Nilai |
+|------|-------|
+| Host OS path | `C:/Users/user/Amigo` → container `/var/www/Amigo` via `APP_CODE_PATH_HOST=../` (`C:/Users/user/laradock/.env`) |
+| Nginx vhost | `laradock/nginx/sites/Amigo.test.conf` → `server_name Amigo.test`, `root /var/www/Amigo/public`, `fastcgi_pass php-upstream` |
+| Hosts entry | `127.0.0.1      Amigo.test` di `C:\Windows\System32\drivers\etc\hosts` (butuh Run as Administrator) |
+| APP_URL | `http://Amigo.test` (host `.env` + container `/var/www/Amigo/.env` harus sama, lalu `php artisan config:clear`) |
+| Verifikasi | `docker ps` (nginx/php-fpm/workspace/redis/mariadb Up) → `curl -H "Host: Amigo.test" http://127.0.0.1/login` → `200` → buka `http://Amigo.test` di browser |
+| Catatan | `realtimechat.conf` tetap ada. `Amigo.test.conf` pakai `listen [::]:80;` tanpa `ipv6only=on` biar tidak duplicate dengan vhost lain. Jika Docker mati, `Amigo.test` tidak akan connect (port 80 tidak ada yang listen). |
+
+**Setup sekali (sudah dilakukan di repo ini, dicatat untuk clone baru):**
+```powershell
+# 1. Buat nginx vhost (dari folder laradock)
+copy nginx\sites\realtimechat.conf nginx\sites\Amigo.test.conf
+# edit: server_name Amigo.test; root /var/www/Amigo/public;
+
+# 2. Tambah hosts (PowerShell sebagai Administrator)
+Add-Content -Path 'C:\Windows\System32\drivers\etc\hosts' -Value '127.0.0.1      Amigo.test'
+
+# 3. Reload nginx & clear config
+docker exec laradock-nginx-1 nginx -t
+docker exec laradock-nginx-1 nginx -s reload
+docker exec laradock-workspace-1 php /var/www/Amigo/artisan config:clear
+```
+
+**Jika `Amigo.test` masih tidak buka:** cek `docker ps` (nginx harus Up), `cat C:\Windows\System32\drivers\etc\hosts | findstr Amigo`, `docker exec laradock-nginx-1 nginx -t`, lalu `curl -H "Host: Amigo.test" http://127.0.0.1/ -i | head`.
+```
+
 ---
 
 ## 13. ⏳ Deferred / TODO (Belum Implementasi Sekarang)
