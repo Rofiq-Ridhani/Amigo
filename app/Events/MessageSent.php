@@ -20,7 +20,7 @@ class MessageSent implements ShouldBroadcastNow
     public function broadcastOn(): array
     {
         return [
-            new PrivateChannel('chat.' . $this->message->receiver_id),
+            new PrivateChannel('chat.' . $this->message->recipient_id),
         ];
     }
 
@@ -32,11 +32,12 @@ class MessageSent implements ShouldBroadcastNow
     public function broadcastWith(): array
     {
         return [
-            'message' => $this->message->message,
-            'sender_id' => $this->message->sender_id,
-            'receiver_id' => $this->message->receiver_id,
-            'created_at' => $this->message->created_at->format('H:i'),
             'id' => $this->message->id,
+            'sender_id' => $this->message->sender_id,
+            'recipient_id' => $this->message->recipient_id,
+            'body' => $this->message->body,
+            'reply_to_id' => $this->message->reply_to_id,
+            'created_at' => $this->message->created_at?->toIso8601String(),
         ];
     }
 }

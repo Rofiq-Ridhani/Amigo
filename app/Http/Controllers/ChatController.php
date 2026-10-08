@@ -24,14 +24,14 @@ class ChatController extends Controller
         $lastMessages = [];
         foreach ($users as $user) {
             $msg = Message::where(function ($q) use ($user) {
-                $q->where('sender_id', Auth::id())->where('receiver_id', $user->id);
+                $q->where('sender_id', Auth::id())->where('recipient_id', $user->id);
             })->orWhere(function ($q) use ($user) {
-                $q->where('sender_id', $user->id)->where('receiver_id', Auth::id());
+                $q->where('sender_id', $user->id)->where('recipient_id', Auth::id());
             })->latest()->first();
 
             if ($msg) {
                 $unreadCount = Message::where('sender_id', $user->id)
-                    ->where('receiver_id', Auth::id())
+                    ->where('recipient_id', Auth::id())
                     ->whereNull('read_at')
                     ->count();
                 $lastMessages[$user->id] = [
@@ -57,7 +57,7 @@ class ChatController extends Controller
 
         // Mark messages from this user as read
         Message::where('sender_id', $user->id)
-            ->where('receiver_id', Auth::id())
+            ->where('recipient_id', Auth::id())
             ->whereNull('read_at')
             ->update(['read_at' => now()]);
 
@@ -77,27 +77,18 @@ class ChatController extends Controller
             'message' => ['required', 'string', 'max:1000'],
         ]);
 
-        $message = Message::create([
-            'sender_id' => Auth::id(),
-            'receiver_id' => $user->id,
-            'message' => $validated['message'],
-        ]);
-
-        // Broadcast to the receiver via WebSocket (Reverb)
-        broadcast(new MessageSent($message));
+        $data = app(\App\Services\MessageService::class)->send(
+            Auth::id(),
+            $user->id,
+            $validated['message']
+        );
 
         // Return JSON for AJAX, redirect for non-AJAX fallback
         if ($request->expectsJson()) {
             return response()->json([
                 'success' => true,
-                'message' => [
-                    'id' => $message->id,
-                    'message' => $message->message,
-                    'sender_id' => $message->sender_id,
-                    'receiver_id' => $message->receiver_id,
-                    'created_at' => $message->created_at->format('H:i'),
-                ],
-            ]);
+                'message' => $data,
+            ], 201);
         }
 
         return redirect()->route('chat.show', $user);

@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\ApiController;
 use App\Http\Controllers\ChatController;
+use App\Http\Controllers\MessageController;
 use App\Http\Controllers\ProfileController;
 use Illuminate\Support\Facades\Route;
 
@@ -22,6 +23,13 @@ Route::middleware('auth')->group(function () {
     // Contract §4.4–4.5 — auth JSON for SPA/frontend
     Route::get('/api/me', [ApiController::class, 'me'])->name('api.me');
     Route::get('/socket-token', [ApiController::class, 'socketToken'])->name('socket.token');
+
+    // Contract §5 — messages (step 3: send, history, reply)
+    Route::get('/api/users', [MessageController::class, 'users'])->name('api.users');
+    Route::post('/messages', [MessageController::class, 'store'])->name('messages.store');
+    Route::get('/api/conversations/{userId}/messages', [MessageController::class, 'index'])->name('messages.index');
+    Route::post('/api/conversations/{userId}/mark-read', [MessageController::class, 'markRead'])->name('messages.markRead');
+    Route::get('/api/unread-count', [MessageController::class, 'unreadCount'])->name('messages.unreadCount');
 });
 
 require __DIR__.'/auth.php';
