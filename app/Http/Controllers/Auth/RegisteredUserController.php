@@ -46,6 +46,20 @@ class RegisteredUserController extends Controller
 
         Auth::login($user);
 
+        if ($request->expectsJson() || $request->wantsJson()) {
+            return response()->json([
+                'success' => true,
+                'message' => 'Registrasi berhasil',
+                'data' => [
+                    'user' => [
+                        'id' => $user->id,
+                        'name' => $user->name,
+                        'email' => $user->email,
+                    ],
+                ],
+            ], 201);
+        }
+
         return redirect(route('users.index', absolute: false));
     }
 }
