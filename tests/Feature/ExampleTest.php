@@ -1,19 +1,18 @@
 <?php
 
+// file: tests/Feature/ExampleTest.php
+
 namespace Tests\Feature;
 
-// use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 class ExampleTest extends TestCase
 {
     /**
-     * A basic test example.
+     * Halaman utama diarahkan ke /chat (yang lalu meminta login).
      */
-    public function test_the_application_returns_a_successful_response(): void
+    public function test_halaman_utama_diarahkan_ke_chat(): void
     {
-        $response = $this->get('/');
-
-        $response->assertStatus(200);
+        $this->get('/')->assertRedirect('/chat');
     }
 }

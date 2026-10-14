@@ -1,0 +1,24 @@
+{
+  "name": "amigo-websocket",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Server Socket.IO untuk Amigo (kontrak §E, §H.1, §D.9)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "smoke": "node scripts/smoke-test.js",
+    "smoke:messages": "node scripts/smoke-messages.js",
+    "listen": "node scripts/listen.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "ioredis": "^5.4.1",
+    "jsonwebtoken": "^9.0.2",
+    "socket.io": "^4.8.0"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.0"
+  }
+}
