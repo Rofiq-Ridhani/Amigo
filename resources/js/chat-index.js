@@ -1,20 +1,17 @@
-// resources/js/chat-index.js — sidebar: daftar user, pencarian, indikator online (Fase 1)
+// resources/js/chat-index.js — sidebar: daftar user, pencarian, presence; membuka percakapan (Fase 1–2)
 import { USE_MOCKS, getUsers } from "./api.js";
 import { connectSocket } from "./socket.js";
 import { EV } from "./events.js";
+import { lastSeenText } from "./format.js";
+import { bindSocket, initConversation, onPresence, openFromQuery, openWithUser, refreshPeerStatus } from "./conversation.js";
 
 const PER_PAGE = 20;
 const online = new Set(); // hanya dari presence:snapshot / presence:update (bukan REST)
 const rows = new Map(); // user.id -> { li, user }
 const state = { q: "", nextPage: 1, reqId: 0, loading: false };
+let activeId = null;
 
 const $ = (id) => document.getElementById(id);
-
-function lastSeenText(iso) {
-    if (!iso) return "Offline";
-    const t = new Intl.DateTimeFormat("id-ID", { dateStyle: "medium", timeStyle: "short" }).format(new Date(iso));
-    return `Terakhir dilihat ${t}`;
-}
 
 function paintRow(id) {
     const row = rows.get(id);
@@ -26,13 +23,20 @@ function paintRow(id) {
     row.li.querySelector("[data-status]").textContent = isOnline ? "Online" : lastSeenText(row.user.last_seen_at);
 }
 
+function setActive(id) {
+    activeId = id;
+    rows.forEach((row, uid) => row.li.classList.toggle("bg-brand-50", uid === id));
+}
+
 function addRow(user) {
     const li = $("user-item-template").content.firstElementChild.cloneNode(true);
     li.querySelector("[data-avatar]").textContent = (user.name.trim()[0] ?? "?").toUpperCase();
     li.querySelector("[data-name]").textContent = user.name;
+    li.querySelector("[data-open]").addEventListener("click", () => openWithUser(rows.get(user.id)?.user ?? user));
     $("user-list").appendChild(li);
     rows.set(user.id, { li, user });
     paintRow(user.id);
+    li.classList.toggle("bg-brand-50", user.id === activeId);
 }
 
 function setState(text, { button = null } = {}) {
@@ -59,11 +63,8 @@ async function loadUsers(reset) {
         users.forEach(addRow);
         state.nextPage = meta.page + 1;
         const hasMore = meta.page < meta.last_page;
-        if (rows.size === 0) {
-            setState(state.q ? "Tidak ada pengguna yang cocok." : "Belum ada pengguna lain.");
-        } else {
-            setState("", { button: hasMore ? "Muat lebih banyak" : null });
-        }
+        if (rows.size === 0) setState(state.q ? "Tidak ada pengguna yang cocok." : "Belum ada pengguna lain.");
+        else setState("", { button: hasMore ? "Muat lebih banyak" : null });
     } catch (err) {
         if (myReq !== state.reqId) return;
         setState(err.message || "Gagal memuat pengguna.", { button: "Coba lagi" });
@@ -89,6 +90,7 @@ async function startRealtime() {
         online.clear();
         data.online_user_ids.forEach((id) => online.add(id));
         rows.forEach((_, id) => paintRow(id));
+        refreshPeerStatus();
     });
     // §E.3: perbarui satu user
     sock.on(EV.PRESENCE_UPDATE, ({ data }) => {
@@ -97,7 +99,10 @@ async function startRealtime() {
         const row = rows.get(data.user_id);
         if (row && data.last_seen_at) row.user.last_seen_at = data.last_seen_at;
         paintRow(data.user_id);
+        onPresence(data.user_id, data.last_seen_at);
     });
+
+    bindSocket(sock); // message:new, message:delivery, sync:required, resync saat reconnect
 
     // §D.2: client wajib memutus socket saat logout (form tetap submit normal)
     $("logout-form").addEventListener("submit", () => sock.disconnect());
@@ -105,6 +110,7 @@ async function startRealtime() {
 
 export function initChatIndex() {
     if (USE_MOCKS) $("mock-badge").classList.remove("hidden");
+    initConversation({ online, onActive: setActive });
 
     let timer;
     $("user-search").addEventListener("input", (e) => {
@@ -121,4 +127,5 @@ export function initChatIndex() {
 
     loadUsers(true);
     startRealtime().catch(() => setConnection("Tidak terhubung", false));
+    openFromQuery();
 }

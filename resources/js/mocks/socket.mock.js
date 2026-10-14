@@ -1,31 +1,41 @@
-// resources/js/mocks/socket.mock.js — Socket.IO tiruan: presence:snapshot & presence:update (envelope §E.2, payload §E.3)
-const envelope = (data) => ({ event_id: crypto.randomUUID(), occurred_at: new Date().toISOString(), data });
+// resources/js/mocks/socket.mock.js — Socket.IO tiruan (envelope §E.2, payload §E.3)
+export const envelope = (data) => ({ event_id: crypto.randomUUID(), occurred_at: new Date().toISOString(), data });
+
+let active = null;
+// Dipakai api.mock.js untuk mensimulasikan event server (message:new, message:delivery)
+export const mockBus = { emit: (name, ...args) => active?.fire(name, ...args) };
 
 export function createMockSocket() {
     const handlers = new Map();
     const timers = [];
-    const emit = (name, ...args) => (handlers.get(name) ?? []).forEach((h) => h(...args));
+    const fire = (name, ...args) => (handlers.get(name) ?? []).forEach((h) => h(...args));
     const at = (ms, fn) => timers.push(setTimeout(fn, ms));
 
     const socket = {
         connected: false,
+        fire,
         on(name, h) {
             handlers.set(name, [...(handlers.get(name) ?? []), h]);
+        },
+        // client -> server: server tiruan selalu membalas ACK ok
+        emit(_name, _payload, cb) {
+            if (typeof cb === "function") cb({ ok: true });
         },
         disconnect() {
             timers.forEach(clearTimeout);
             socket.connected = false;
-            emit("disconnect", "io client disconnect");
+            fire("disconnect", "io client disconnect");
         },
     };
+    active = socket;
 
     at(400, () => {
         socket.connected = true;
-        emit("connect");
-        emit("presence:snapshot", envelope({ online_user_ids: [2, 3] }));
+        fire("connect");
+        fire("presence:snapshot", envelope({ online_user_ids: [2, 3] }));
     });
-    at(5000, () => emit("presence:update", envelope({ user_id: 4, status: "online", last_seen_at: null })));
-    at(12000, () => emit("presence:update", envelope({ user_id: 2, status: "offline", last_seen_at: new Date().toISOString() })));
+    at(5000, () => fire("presence:update", envelope({ user_id: 4, status: "online", last_seen_at: null })));
+    at(12000, () => fire("presence:update", envelope({ user_id: 2, status: "offline", last_seen_at: new Date().toISOString() })));
 
     return socket;
 }

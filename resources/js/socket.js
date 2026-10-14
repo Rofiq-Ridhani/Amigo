@@ -57,6 +57,10 @@ export async function connectSocket() {
         onLifecycle(name, handler) {
             raw.on(name, handler);
         },
+        // client -> server (§E.4), mis. message:delivered; payload tanpa user_id
+        emit(event, payload, cb) {
+            raw.emit(event, payload, cb);
+        },
         disconnect() {
             raw.disconnect();
         },

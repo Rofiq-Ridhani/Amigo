@@ -84,3 +84,34 @@ export async function getSocketToken() {
     if (USE_MOCKS) return (await loadMocks()).mockGetSocketToken();
     return (await request("GET", "/socket-token")).data;
 }
+
+// ---- Fase 2: percakapan & pesan (kontrak §D.4, §D.5) ----
+
+// POST /api/v1/conversations {user_id} -> { data: { conversation } } (201 baru / 200 sudah ada)
+export async function createConversation(userId) {
+    if (USE_MOCKS) return (await loadMocks()).mockCreateConversation(userId);
+    return (await request("POST", "/conversations", { body: { user_id: userId } })).data.conversation;
+}
+
+// GET /api/v1/conversations?page=&per_page= -> { data: { conversations }, meta }
+export async function getConversations({ page = 1, perPage = 20 } = {}) {
+    if (USE_MOCKS) return (await loadMocks()).mockGetConversations();
+    const p = await request("GET", "/conversations", { query: { page, per_page: perPage } });
+    return { conversations: p.data.conversations, meta: p.meta };
+}
+
+// GET /api/v1/conversations/{id}/messages — mode riwayat (before_id, limit) ATAU resync (updated_since)
+export async function getMessages(conversationId, { beforeId, limit, updatedSince } = {}) {
+    if (USE_MOCKS) return (await loadMocks()).mockGetMessages(conversationId, { beforeId, limit, updatedSince });
+    const query = updatedSince ? { updated_since: updatedSince } : { before_id: beforeId, limit };
+    const p = await request("GET", `/conversations/${encodeURIComponent(conversationId)}/messages`, { query });
+    return { messages: p.data.messages, meta: p.meta };
+}
+
+// POST /api/v1/conversations/{id}/messages {client_uuid, body, reply_to_id?} -> { data: { message } }
+export async function sendMessage(conversationId, { clientUuid, body, replyToId }) {
+    if (USE_MOCKS) return (await loadMocks()).mockSendMessage(conversationId, { clientUuid, body });
+    const payload = { client_uuid: clientUuid, body };
+    if (replyToId) payload.reply_to_id = replyToId;
+    return (await request("POST", `/conversations/${encodeURIComponent(conversationId)}/messages`, { body: payload })).data.message;
+}
