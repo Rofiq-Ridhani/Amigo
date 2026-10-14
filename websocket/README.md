@@ -13,7 +13,7 @@ Membaca `.env` di ROOT project. Variabel wajib: `SOCKET_SECRET`, `INTERNAL_API_S
 `SOCKET_ALLOWED_ORIGINS`. Untuk Redis: `REDIS_HOST` (nama service, mis. `redis`), `REDIS_PORT`,
 `REDIS_PASSWORD`, `REDIS_CHAT_CHANNEL`, `REDIS_NOTIFICATION_CHANNEL`.
 Opsional: `SOCKET_PORT` (3001), `LARAVEL_INTERNAL_URL`, `LARAVEL_INTERNAL_HOST`,
-`PRESENCE_GRACE_MS` (5000), `ACK_TIMEOUT_MS` (5000).
+`PRESENCE_GRACE_MS` (5000), `ACK_TIMEOUT_MS` (5000), `INTERNAL_TIMEOUT_MS` (15000).
 
 Cek hidup: `http://localhost:3001/health` (memuat status Redis).
 
@@ -33,6 +33,8 @@ Server → client (semua memakai envelope `{ event_id, occurred_at, data }`):
 | `presence:update` | semua | – | `{ user_id, status: "online"\|"offline", last_seen_at }` |
 | `message:new` | pengirim + penerima | **ya** (penerima) | `{ message: Message }` |
 | `message:delivery` | pengirim pesan | – | `{ conversation_id, message_ids: [..], delivered_at }` |
+| `message:read` | pengirim pesan | – | `{ conversation_id, reader_id, up_to_message_id, read_at }` |
+| `unread:update` | semua tab satu user | – | `{ conversation_id, unread_count, total_unread }` (angka absolut) |
 | `sync:required` | semua | – | `{ reason: "redis_reconnected", server_time }` |
 
 Client → server:

@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\MeController;
 use App\Http\Controllers\Api\MessageController;
+use App\Http\Controllers\Api\ReadStateController;
 use App\Http\Controllers\Api\SocketTokenController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\AuthController;
@@ -39,5 +40,11 @@ Route::middleware('auth')->group(function () {
         Route::post('/conversations/{id}/messages', [MessageController::class, 'store'])
             ->whereNumber('id')
             ->middleware('throttle:30,1');
+
+        // Fase 3: status baca & unread
+        Route::post('/conversations/{id}/read', [ReadStateController::class, 'markRead'])
+            ->whereNumber('id')
+            ->middleware('throttle:60,1');
+        Route::get('/unread-counts', [ReadStateController::class, 'counts']);
     });
 });
