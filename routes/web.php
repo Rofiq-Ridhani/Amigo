@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\MeController;
 use App\Http\Controllers\Api\MessageController;
+use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\ReadStateController;
 use App\Http\Controllers\Api\SocketTokenController;
 use App\Http\Controllers\Api\UserController;
@@ -46,5 +47,12 @@ Route::middleware('auth')->group(function () {
             ->whereNumber('id')
             ->middleware('throttle:60,1');
         Route::get('/unread-counts', [ReadStateController::class, 'counts']);
+
+        // Fase 4: notifikasi
+        Route::get('/notifications', [NotificationController::class, 'index']);
+        Route::post('/notifications/read-all', [NotificationController::class, 'readAll'])->middleware('throttle:60,1');
+        Route::post('/notifications/{id}/read', [NotificationController::class, 'read'])
+            ->whereUuid('id')
+            ->middleware('throttle:60,1');
     });
 });

@@ -147,6 +147,7 @@ class Phase2MessagesTest extends TestCase
         $c = $this->makeConversation($this->andi, $this->budi);
 
         $published = [];
+        Redis::shouldReceive('publish')->once()->with('chat.notifications', Mockery::any()); // notification:new
         Redis::shouldReceive('publish')
             ->twice() // message:new lalu unread:update
             ->with('chat.messages', Mockery::on(function ($json) use (&$published) {
@@ -178,7 +179,7 @@ class Phase2MessagesTest extends TestCase
         config(['chat.realtime_enabled' => true]);
         $c = $this->makeConversation($this->andi, $this->budi);
 
-        Redis::shouldReceive('publish')->twice()->andThrow(new \RuntimeException('Connection refused'));
+        Redis::shouldReceive('publish')->times(3)->andThrow(new \RuntimeException('Connection refused'));
 
         $this->actingAs($this->andi)->postJson("/api/v1/conversations/{$c->id}/messages", [
             'client_uuid' => (string) Str::uuid(),
@@ -194,7 +195,7 @@ class Phase2MessagesTest extends TestCase
         $c = $this->makeConversation($this->andi, $this->budi);
         $uuid = (string) Str::uuid();
 
-        Redis::shouldReceive('publish')->twice(); // message:new + unread:update, HANYA dari kiriman pertama
+        Redis::shouldReceive('publish')->times(3); // message:new + unread:update + notification:new, HANYA dari kiriman pertama
 
         $first = $this->actingAs($this->andi)->postJson("/api/v1/conversations/{$c->id}/messages", [
             'client_uuid' => $uuid, 'body' => 'Sekali saja',
