@@ -50,6 +50,7 @@ function connect(userId, { ack = true } = {}) {
   socket.events = [];
   socket.onAny((name, env) => socket.events.push({ name, env }));
   if (ack) socket.on('message:new', (_env, cb) => typeof cb === 'function' && cb({ ok: true }));
+  if (ack) socket.on('notification:new', (_env, cb) => typeof cb === 'function' && cb({ ok: true }));
   return socket;
 }
 
@@ -190,6 +191,44 @@ const publish = (obj, channel = `smoke_database_${CHANNEL}`) =>
   check('pembaca TIDAK menerima message:read yang untuk pengirim', !b.events.slice(markB).some((e) => e.name === 'message:read'));
   check('user 3 tidak menerima apa pun', c.events.length === markC);
   b2.close();
+
+  console.log('\n[7] Notifikasi (Fase 4)');
+  const notifId = crypto.randomUUID();
+  const notifEnv = {
+    event_id: crypto.randomUUID(),
+    event: 'notification:new',
+    occurred_at: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    to: [2],
+    ack_user_id: 2,
+    data: {
+      notification: { id: notifId, type: 'chat.message', title: 'Pesan baru dari Andi', body: 'Halo', data: { conversation_id: 1, message_id: 900001, sender_id: 1, url: '/chat?conversation=1' }, read_at: null, created_at: '2026-10-15T02:00:00Z' },
+      unread_count: 1,
+    },
+  };
+  const notifReadEnv = {
+    event_id: crypto.randomUUID(),
+    event: 'notification:read',
+    occurred_at: notifEnv.occurred_at,
+    to: [2],
+    ack_user_id: null,
+    data: { ids: [notifId], all: false, unread_count: 0 },
+  };
+  const n2 = connect(2); // tab kedua penerima
+  await waitFor(n2, (e) => e.name === 'presence:snapshot');
+  const mA = a.events.length;
+  const mC = c.events.length;
+  await publish(notifEnv);
+  const gotNotif = await waitFor(b, (e) => e.name === 'notification:new');
+  const gotNotif2 = await waitFor(n2, (e) => e.name === 'notification:new');
+  check('penerima menerima notification:new (tab pertama)', !!gotNotif && gotNotif.env.data.notification.id === notifId && gotNotif.env.data.unread_count === 1);
+  check('semua tab penerima menerima notification:new', !!gotNotif2);
+  await publish(notifReadEnv);
+  const gotNr = await waitFor(b, (e) => e.name === 'notification:read');
+  const gotNr2 = await waitFor(n2, (e) => e.name === 'notification:read');
+  check('notification:read sampai ke semua tab penerima', !!gotNr && !!gotNr2 && gotNr.env.data.unread_count === 0 && gotNr.env.data.all === false);
+  await sleep(400);
+  check('user lain TIDAK menerima notifikasi', !a.events.slice(mA).some((e) => e.name.startsWith('notification:')) && !c.events.slice(mC).some((e) => e.name.startsWith('notification:')));
+  n2.close();
 
   [a, b, c].forEach((s) => s.close());
   redis.disconnect();
