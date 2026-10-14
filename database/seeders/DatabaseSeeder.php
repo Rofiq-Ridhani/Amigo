@@ -11,15 +11,22 @@ class DatabaseSeeder extends Seeder
     use WithoutModelEvents;
 
     /**
-     * Seed the application's database.
+     * Akun demo untuk development (password: "password"). Jangan dipakai di production.
+     * Aman dijalankan berulang: akun yang sudah ada tidak diduplikasi.
      */
     public function run(): void
     {
-        // User::factory(10)->create();
+        $demo = [
+            ['name' => 'Test User', 'email' => 'test@example.com'],
+            ['name' => 'Andi Pratama', 'email' => 'andi@example.com'],
+            ['name' => 'Budi Santoso', 'email' => 'budi@example.com'],
+        ];
 
-        User::factory()->create([
-            'name' => 'Test User',
-            'email' => 'test@example.com',
-        ]);
+        foreach ($demo as $account) {
+            User::firstOrCreate(
+                ['email' => $account['email']],
+                ['name' => $account['name'], 'password' => 'password'],
+            );
+        }
     }
 }
