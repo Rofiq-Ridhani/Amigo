@@ -154,6 +154,43 @@ const publish = (obj, channel = `smoke_database_${CHANNEL}`) =>
   const h3 = await health();
   check('pesan untuk user offline tidak membuat server error', !!h3 && h3.ok === true);
 
+  console.log('\n[6] message:read dan unread:update (Fase 3)');
+  const readEnv = {
+    event_id: crypto.randomUUID(),
+    event: 'message:read',
+    occurred_at: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    to: [1],
+    ack_user_id: null,
+    data: { conversation_id: 1, reader_id: 2, up_to_message_id: 900001, read_at: '2026-10-14T02:00:00Z' },
+  };
+  const unreadEnv = {
+    event_id: crypto.randomUUID(),
+    event: 'unread:update',
+    occurred_at: readEnv.occurred_at,
+    to: [2],
+    ack_user_id: null,
+    data: { conversation_id: 1, unread_count: 0, total_unread: 3 },
+  };
+  // tab kedua milik user 2 untuk memastikan unread:update sampai ke SEMUA tab
+  const b2 = connect(2);
+  await waitFor(b2, (e) => e.name === 'presence:snapshot');
+  const markA = a.events.length;
+  const markB = b.events.length;
+  const markC = c.events.length;
+  await publish(readEnv);
+  await publish(unreadEnv);
+  const gotRead = await waitFor(a, (e) => e.name === 'message:read');
+  const gotUnreadB = await waitFor(b, (e) => e.name === 'unread:update');
+  const gotUnreadB2 = await waitFor(b2, (e) => e.name === 'unread:update');
+  await sleep(500);
+  check('pengirim (user 1) menerima message:read', !!gotRead && gotRead.env.data.up_to_message_id === 900001 && gotRead.env.data.reader_id === 2);
+  check('pembaca menerima unread:update di tab pertama', !!gotUnreadB && gotUnreadB.env.data.total_unread === 3);
+  check('pembaca menerima unread:update di tab kedua', !!gotUnreadB2);
+  check('pengirim TIDAK menerima unread:update milik pembaca', !a.events.slice(markA).some((e) => e.name === 'unread:update'));
+  check('pembaca TIDAK menerima message:read yang untuk pengirim', !b.events.slice(markB).some((e) => e.name === 'message:read'));
+  check('user 3 tidak menerima apa pun', c.events.length === markC);
+  b2.close();
+
   [a, b, c].forEach((s) => s.close());
   redis.disconnect();
   console.log(failed === 0 ? '\nSEMUA LULUS' : `\n${failed} TES GAGAL`);

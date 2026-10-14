@@ -15,10 +15,13 @@ use Illuminate\Validation\ValidationException;
  */
 class MessageService
 {
-    public function __construct(private readonly RealtimePublisher $realtime) {}
+    public function __construct(
+        private readonly RealtimePublisher $realtime,
+        private readonly UnreadService $unread,
+    ) {}
 
     /**
-     * Simpan pesan lalu publish `message:new`. Idempoten berdasarkan client_uuid.
+     * Simpan pesan lalu publish `message:new` dan `unread:update`. Idempoten berdasarkan client_uuid.
      *
      * @return array{0:Message,1:bool} [pesan, apakah baru dibuat]
      */
@@ -66,6 +69,13 @@ class MessageService
             ['message' => $message->toApiArray()],
             $recipientId,
         );
+
+        // Badge unread penerima (kontrak §H.4): angka absolut, client mengganti nilainya
+        $this->realtime->publish('messages', 'unread:update', [$recipientId], [
+            'conversation_id' => $conversation->id,
+            'unread_count' => $this->unread->forConversation($recipientId, $conversation->id),
+            'total_unread' => $this->unread->total($recipientId),
+        ]);
 
         return [$message, true];
     }

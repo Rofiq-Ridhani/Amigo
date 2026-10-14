@@ -146,11 +146,11 @@ class Phase2MessagesTest extends TestCase
         config(['chat.realtime_enabled' => true]);
         $c = $this->makeConversation($this->andi, $this->budi);
 
-        $captured = null;
+        $published = [];
         Redis::shouldReceive('publish')
-            ->once()
-            ->with('chat.messages', Mockery::on(function ($json) use (&$captured) {
-                $captured = json_decode($json, true);
+            ->twice() // message:new lalu unread:update
+            ->with('chat.messages', Mockery::on(function ($json) use (&$published) {
+                $published[] = json_decode($json, true);
 
                 return true;
             }));
@@ -160,12 +160,17 @@ class Phase2MessagesTest extends TestCase
             'body' => 'Halo',
         ])->assertCreated();
 
+        $captured = $published[0];
         $this->assertSame('message:new', $captured['event']);
         $this->assertEqualsCanonicalizing([$this->andi->id, $this->budi->id], $captured['to']);
         $this->assertSame($this->budi->id, $captured['ack_user_id']);
         $this->assertSame('Halo', $captured['data']['message']['body']);
         $this->assertNotEmpty($captured['event_id']);
         $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/', $captured['occurred_at']);
+
+        $this->assertSame('unread:update', $published[1]['event']);
+        $this->assertSame([$this->budi->id], $published[1]['to']);
+        $this->assertSame(1, $published[1]['data']['unread_count']);
     }
 
     public function test_redis_gagal_pesan_tetap_tersimpan_201(): void
@@ -173,7 +178,7 @@ class Phase2MessagesTest extends TestCase
         config(['chat.realtime_enabled' => true]);
         $c = $this->makeConversation($this->andi, $this->budi);
 
-        Redis::shouldReceive('publish')->once()->andThrow(new \RuntimeException('Connection refused'));
+        Redis::shouldReceive('publish')->twice()->andThrow(new \RuntimeException('Connection refused'));
 
         $this->actingAs($this->andi)->postJson("/api/v1/conversations/{$c->id}/messages", [
             'client_uuid' => (string) Str::uuid(),
@@ -189,7 +194,7 @@ class Phase2MessagesTest extends TestCase
         $c = $this->makeConversation($this->andi, $this->budi);
         $uuid = (string) Str::uuid();
 
-        Redis::shouldReceive('publish')->once(); // HANYA sekali
+        Redis::shouldReceive('publish')->twice(); // message:new + unread:update, HANYA dari kiriman pertama
 
         $first = $this->actingAs($this->andi)->postJson("/api/v1/conversations/{$c->id}/messages", [
             'client_uuid' => $uuid, 'body' => 'Sekali saja',
