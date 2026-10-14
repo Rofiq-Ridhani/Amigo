@@ -1,6 +1,6 @@
 # AMIGO — TECHNICAL CONTRACT
 
-**Contract version:** `0.2.1` · **Status:** siap dipakai Backend + Frontend (semua keputusan terbuka sudah diberi nilai default di §14) · **Bahasa dokumen:** Indonesia, nama teknis tetap Inggris
+**Contract version:** `0.2.2` · **Status:** siap dipakai Backend + Frontend (semua keputusan terbuka sudah diberi nilai default di §14) · **Bahasa dokumen:** Indonesia, nama teknis tetap Inggris
 
 > Dokumen ini adalah **satu-satunya sumber acuan** untuk AI Backend dan AI Frontend.
 > Jika kode dan dokumen bertentangan, **jangan memperbaiki diam-diam di satu sisi** — ikuti prosedur di §0.3.
@@ -876,6 +876,7 @@ Socket.IO **Connection State Recovery tidak diandalkan** (tidak ada jaminan lint
 | CC-000 | 2026-10-12 | Draft awal `0.1.0` | – |
 | CC-001 | 2026-10-12 | `0.2.0`: sesuaikan ke repo nyata (Laravel 13, Tailwind 4, PHPUnit), semua ❓ diberi default | Backend |
 | CC-002 | 2026-10-14 | `0.2.1` (Fase 2): (a) `conversations.last_message_id` tanpa FK database karena referensi melingkar dengan `messages`; (b) pada Fase 2 `POST …/messages` hanya menerima teks — `body` wajib dan `attachment_ids` ditolak `422` sampai Fase 6; (c) efek samping `notifications` dan event `unread:update` pada `POST …/messages` ditunda ke Fase 3/4; (d) `unread_count` pada Conversation sudah dihitung lewat query; (e) tidak ada perubahan nama field/event/endpoint | Backend (beri tahu Frontend) |
+| CC-003 | 2026-10-14 | `0.2.2` (Fase 3): (a) `POST …/read` mengembalikan `read_at: null` bila `read_count` = 0 (panggilan ulang), dan tidak memublikasikan event apa pun; (b) `GET /unread-counts` → `by_conversation` hanya memuat percakapan dengan `unread_count` > 0; (c) `unread:update` kini juga dikirim ke penerima setiap ada pesan baru (melengkapi CC-002 butir c); (d) pembaruan otomatis `notifications` saat pesan dibaca menyusul di Fase 4 bersama tabel notifikasi; (e) tidak ada perubahan nama field/event/endpoint | Backend (beri tahu Frontend) |
 
 ## 15. Status Implementasi (diperbarui Backend tiap fase)
 
@@ -888,7 +889,7 @@ Socket.IO **Connection State Recovery tidak diandalkan** (tidak ada jaminan lint
 | §D.5 `POST /api/v1/conversations/{id}/messages` (teks, reply, idempoten `client_uuid`) | ✅ Fase 2 |
 | §E `message:new` (+ACK), `message:delivery`, `message:delivered` (client→server), `sync:required` | ✅ Fase 2 |
 | §D.9 `/internal/v1/presence`, `/internal/v1/messages/delivered` | ✅ (internal, bukan untuk Frontend) |
-| §D.7 read/unread, `message:read`, `unread:update` | ⏳ Fase 3 |
+| §D.7 `POST /api/v1/conversations/{id}/read`, `GET /api/v1/unread-counts`; §E `message:read`, `unread:update` (juga dikirim saat ada pesan baru) | ✅ Fase 3 |
 | §D.8 notifikasi, `notification:*` | ⏳ Fase 4 |
 | §D.5 edit/hapus/reaksi, `message:updated|deleted|reaction`, typing | ⏳ Fase 5 |
 | §D.6, §G lampiran | ⏳ Fase 6 |

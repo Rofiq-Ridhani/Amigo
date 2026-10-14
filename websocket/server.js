@@ -3,8 +3,9 @@
 //   Fase 1B: autentikasi socket (JWT), room user:{id}, presence.
 //   Fase 2 : subscriber Redis -> message:new (+ACK) -> delivered, message:delivered dari client,
 //            sync:required saat Redis tersambung kembali.
+//   Fase 3 : meneruskan message:read dan unread:update dari Redis ke room tujuan.
 // Kontrak: AMIGO_TECHNICAL_CONTRACT.md §E, §H, §D.9, §J.
-// Akan menyusul: typing (Fase 5), event notifikasi (Fase 4), dll.
+// Akan menyusul: event notifikasi (Fase 4), typing & edit/hapus/reaksi (Fase 5).
 
 const path = require('node:path');
 const http = require('node:http');
@@ -43,7 +44,7 @@ const CHAT_CHANNEL = process.env.REDIS_CHAT_CHANNEL || 'chat.messages';
 const NOTIFICATION_CHANNEL = process.env.REDIS_NOTIFICATION_CHANNEL || 'chat.notifications';
 
 // Event yang BOLEH datang dari Redis (daftar putih). Bertambah di fase berikutnya.
-const ALLOWED_REDIS_EVENTS = new Set(['message:new']);
+const ALLOWED_REDIS_EVENTS = new Set(['message:new', 'message:read', 'unread:update']);
 
 function fatal(msg) {
   console.error(`[amigo-ws] FATAL: ${msg}`);
