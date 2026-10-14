@@ -1,7 +1,10 @@
 // file: websocket/server.js
-// Server Socket.IO Amigo — Fase 1B: autentikasi socket (JWT), room user:{id}, presence.
-// Kontrak: AMIGO_TECHNICAL_CONTRACT.md §E.1, §E.2, §E.3 (presence:*), §H.1, §D.9.
-// Fase 2 akan menambah: subscriber Redis, message:new + ACK, typing, message:delivered.
+// Server Socket.IO Amigo.
+//   Fase 1B: autentikasi socket (JWT), room user:{id}, presence.
+//   Fase 2 : subscriber Redis -> message:new (+ACK) -> delivered, message:delivered dari client,
+//            sync:required saat Redis tersambung kembali.
+// Kontrak: AMIGO_TECHNICAL_CONTRACT.md §E, §H, §D.9, §J.
+// Akan menyusul: typing (Fase 5), event notifikasi (Fase 4), dll.
 
 const path = require('node:path');
 const http = require('node:http');
@@ -13,6 +16,7 @@ const crypto = require('node:crypto');
 require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
 
 const jwt = require('jsonwebtoken');
+const Redis = require('ioredis');
 const { Server } = require('socket.io');
 
 // ---------- Konfigurasi ----------
@@ -27,6 +31,19 @@ const LARAVEL_URL = process.env.LARAVEL_INTERNAL_URL || 'http://127.0.0.1:8000';
 // Jika Nginx memilih site berdasarkan nama host (mis. amigo.test), isi ini.
 const LARAVEL_HOST_HEADER = process.env.LARAVEL_INTERNAL_HOST || '';
 const PRESENCE_GRACE_MS = Number(process.env.PRESENCE_GRACE_MS || 5000);
+const ACK_TIMEOUT_MS = Number(process.env.ACK_TIMEOUT_MS || 5000);
+
+const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
+const REDIS_PORT = Number(process.env.REDIS_PORT || 6379);
+// Di .env Laravel, "null" berarti tanpa password
+const rawRedisPassword = process.env.REDIS_PASSWORD;
+const REDIS_PASSWORD =
+  !rawRedisPassword || rawRedisPassword === 'null' || rawRedisPassword === '(null)' ? undefined : rawRedisPassword;
+const CHAT_CHANNEL = process.env.REDIS_CHAT_CHANNEL || 'chat.messages';
+const NOTIFICATION_CHANNEL = process.env.REDIS_NOTIFICATION_CHANNEL || 'chat.notifications';
+
+// Event yang BOLEH datang dari Redis (daftar putih). Bertambah di fase berikutnya.
+const ALLOWED_REDIS_EVENTS = new Set(['message:new']);
 
 function fatal(msg) {
   console.error(`[amigo-ws] FATAL: ${msg}`);
@@ -47,6 +64,8 @@ function envelope(data) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const isPositiveInt = (n) => Number.isInteger(n) && n > 0;
+const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 
 /**
  * POST JSON ke endpoint internal Laravel dengan tanda tangan HMAC (kontrak §D.9).
@@ -73,7 +92,7 @@ function postInternal(urlPath, payload) {
     };
     if (LARAVEL_HOST_HEADER) headers.Host = LARAVEL_HOST_HEADER;
 
-    const req = client.request(target, { method: 'POST', headers, timeout: 5000 }, (res) => {
+    const req = client.request(target, { method: 'POST', headers, timeout: Number(process.env.INTERNAL_TIMEOUT_MS || 15000) }, (res) => {
       let body = '';
       res.on('data', (c) => (body += c));
       res.on('end', () => resolve({ status: res.statusCode, body }));
@@ -85,16 +104,25 @@ function postInternal(urlPath, payload) {
   });
 }
 
-/** Retry 3x (0,5 / 1 / 2 detik). Status 4xx dianggap permanen (tidak diulang). */
-async function postInternalWithRetry(urlPath, payload) {
+/**
+ * Retry 3x (0,5 / 1 / 2 detik). Status 4xx dianggap permanen (tidak diulang).
+ * Mengembalikan JSON hasil (object) bila sukses, atau null bila gagal.
+ */
+async function callInternal(urlPath, payload) {
   const delays = [500, 1000, 2000];
   for (let attempt = 0; attempt <= delays.length; attempt++) {
     try {
       const res = await postInternal(urlPath, payload);
-      if (res.status >= 200 && res.status < 300) return true;
+      if (res.status >= 200 && res.status < 300) {
+        try {
+          return JSON.parse(res.body);
+        } catch {
+          return {};
+        }
+      }
       if (res.status >= 400 && res.status < 500) {
         log(`internal ${urlPath} ditolak (${res.status}); tidak diulang`);
-        return false;
+        return null;
       }
       log(`internal ${urlPath} gagal (${res.status})`);
     } catch (err) {
@@ -102,14 +130,16 @@ async function postInternalWithRetry(urlPath, payload) {
     }
     if (attempt < delays.length) await sleep(delays[attempt]);
   }
-  return false;
+  return null;
 }
 
 // ---------- Server HTTP + Socket.IO ----------
+let redisReady = false;
+
 const httpServer = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, online_users: onlineUsers.size }));
+    res.end(JSON.stringify({ ok: true, online_users: onlineUsers.size, redis: redisReady }));
     return;
   }
   res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -134,7 +164,7 @@ io.use((socket, next) => {
     if (err) return next(new Error('unauthorized'));
 
     const userId = Number(payload.sub);
-    if (!Number.isInteger(userId) || userId <= 0) return next(new Error('unauthorized'));
+    if (!isPositiveInt(userId)) return next(new Error('unauthorized'));
 
     // Identitas HANYA dari token. Payload apa pun dari client tidak dipercaya.
     socket.data.userId = userId;
@@ -150,6 +180,144 @@ const onlineUsers = new Set();
 /** userId -> timer grace offline */
 const offlineTimers = new Map();
 
+// ---------- Delivered (kontrak §E.5, §H.2) ----------
+/**
+ * Tandai pesan sebagai delivered di Laravel lalu beri tahu para pengirim lewat `message:delivery`.
+ * Laravel yang menentukan pesan mana yang sah (hanya milik penerima & belum delivered).
+ */
+async function markDelivered(recipientId, messageIds) {
+  const result = await callInternal('/internal/v1/messages/delivered', {
+    recipient_id: recipientId,
+    message_ids: messageIds,
+  });
+  if (!result) return;
+
+  const delivered = (result.data && result.data.delivered) || [];
+
+  // Kelompokkan per (pengirim, percakapan)
+  const groups = new Map();
+  for (const item of delivered) {
+    if (!isPositiveInt(item.id) || !isPositiveInt(item.sender_id) || !isPositiveInt(item.conversation_id)) continue;
+    const key = `${item.sender_id}:${item.conversation_id}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        sender_id: item.sender_id,
+        conversation_id: item.conversation_id,
+        message_ids: [],
+        delivered_at: item.delivered_at,
+      });
+    }
+    groups.get(key).message_ids.push(item.id);
+  }
+
+  for (const g of groups.values()) {
+    io.to(`user:${g.sender_id}`).emit(
+      'message:delivery',
+      envelope({ conversation_id: g.conversation_id, message_ids: g.message_ids, delivered_at: g.delivered_at }),
+    );
+    log(`delivered conversation=${g.conversation_id} ids=${g.message_ids.join(',')} -> pengirim ${g.sender_id}`);
+  }
+}
+
+// ---------- Subscriber Redis (kontrak §E.2) ----------
+/** Validasi bentuk envelope dari Laravel. Mengembalikan null bila tidak valid. */
+function parseRedisEnvelope(raw) {
+  let env;
+  try {
+    env = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+
+  if (!isPlainObject(env)) return null;
+  if (typeof env.event_id !== 'string' || typeof env.occurred_at !== 'string') return null;
+  if (typeof env.event !== 'string' || !ALLOWED_REDIS_EVENTS.has(env.event)) return null;
+  if (!Array.isArray(env.to) || env.to.length === 0 || !env.to.every(isPositiveInt)) return null;
+  if (!isPlainObject(env.data)) return null;
+  if (env.ack_user_id !== null && env.ack_user_id !== undefined) {
+    if (!isPositiveInt(env.ack_user_id) || !env.to.includes(env.ack_user_id)) return null;
+  }
+  return env;
+}
+
+function dispatchEnvelope(env) {
+  const payload = { event_id: env.event_id, occurred_at: env.occurred_at, data: env.data };
+
+  for (const userId of new Set(env.to)) {
+    const room = `user:${userId}`;
+
+    if (env.ack_user_id === userId) {
+      // Penerima yang ACK-nya dihitung: delivered bila minimal satu socketnya membalas ok
+      io.in(room)
+        .timeout(ACK_TIMEOUT_MS)
+        .emit(env.event, payload, (err, responses) => {
+          const acked = (responses || []).some((r) => r && r.ok === true);
+          if (!acked) {
+            log(`${env.event} ke user=${userId}: belum ada ACK (status tetap sent)`);
+            return;
+          }
+          if (env.event === 'message:new') {
+            const messageId = env.data.message && env.data.message.id;
+            if (isPositiveInt(messageId)) markDelivered(userId, [messageId]);
+          }
+        });
+    } else {
+      io.to(room).emit(env.event, payload);
+    }
+  }
+}
+
+function handleRedisMessage(raw) {
+  const env = parseRedisEnvelope(raw);
+  if (!env) {
+    log('envelope Redis tidak valid; diabaikan');
+    return;
+  }
+  dispatchEnvelope(env);
+}
+
+const subscriber = new Redis({
+  host: REDIS_HOST,
+  port: REDIS_PORT,
+  password: REDIS_PASSWORD,
+  retryStrategy: (times) => Math.min(times * 500, 5000),
+});
+
+let redisWasDown = false;
+let lastRedisErrorLog = 0;
+
+subscriber.on('error', (err) => {
+  redisWasDown = true;
+  redisReady = false;
+  const now = Date.now();
+  if (now - lastRedisErrorLog > 10000) {
+    lastRedisErrorLog = now;
+    log(`Redis error: ${err.message} (mencoba menyambung kembali)`);
+  }
+});
+subscriber.on('close', () => {
+  redisWasDown = true;
+  redisReady = false;
+});
+subscriber.on('ready', () => {
+  redisReady = true;
+  log(`Redis tersambung (${REDIS_HOST}:${REDIS_PORT})`);
+  if (redisWasDown) {
+    redisWasDown = false;
+    // Event selama Redis putus bisa terlewat: minta semua client sinkron ulang (kontrak §J)
+    io.emit('sync:required', envelope({ reason: 'redis_reconnected', server_time: isoNow() }));
+    log('sync:required dikirim ke semua client');
+  }
+});
+
+// Pattern diawali "*" agar tetap cocok dengan prefix Redis milik Laravel
+subscriber.psubscribe(`*${CHAT_CHANNEL}`, `*${NOTIFICATION_CHANNEL}`, (err) => {
+  if (err) log(`psubscribe gagal: ${err.message}`);
+  else log(`subscribe pattern: *${CHAT_CHANNEL}, *${NOTIFICATION_CHANNEL}`);
+});
+subscriber.on('pmessage', (_pattern, _channel, message) => handleRedisMessage(message));
+
+// ---------- Koneksi socket ----------
 io.on('connection', (socket) => {
   const userId = socket.data.userId;
 
@@ -178,6 +346,30 @@ io.on('connection', (socket) => {
 
   log(`connect user=${userId} sockets=${socketsByUser.get(userId).size}`);
 
+  // ---- message:delivered (client -> server), kontrak §E.4 ----
+  // Dipakai setelah resync REST menerima pesan yang belum pernah di-ACK lewat message:new.
+  const deliveredCalls = [];
+  socket.on('message:delivered', (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+
+    const ids = payload && payload.message_ids;
+    if (!Array.isArray(ids) || ids.length < 1 || ids.length > 100 || !ids.every(isPositiveInt)) {
+      return reply({ ok: false, error: { code: 'VALIDATION_ERROR', message: 'message_ids tidak valid' } });
+    }
+
+    // Batas 20 panggilan / menit / socket (kontrak §I no. 9)
+    const now = Date.now();
+    while (deliveredCalls.length && now - deliveredCalls[0] > 60000) deliveredCalls.shift();
+    if (deliveredCalls.length >= 20) {
+      return reply({ ok: false, error: { code: 'RATE_LIMITED', message: 'Terlalu banyak permintaan' } });
+    }
+    deliveredCalls.push(now);
+
+    // user_id HANYA dari token; Laravel memfilter pesan yang bukan milik user ini
+    markDelivered(userId, ids);
+    return reply({ ok: true });
+  });
+
   socket.on('disconnect', () => {
     const set = socketsByUser.get(userId);
     if (set) {
@@ -201,11 +393,7 @@ io.on('connection', (socket) => {
       log(`offline user=${userId}`);
 
       // Simpan last_seen_at di database lewat Laravel (kontrak §D.9)
-      postInternalWithRetry('/internal/v1/presence', {
-        user_id: userId,
-        status: 'offline',
-        at: lastSeenAt,
-      });
+      callInternal('/internal/v1/presence', { user_id: userId, status: 'offline', at: lastSeenAt });
     }, PRESENCE_GRACE_MS);
 
     offlineTimers.set(userId, timer);
@@ -220,6 +408,7 @@ httpServer.listen(PORT, '0.0.0.0', () => {
 
 function shutdown() {
   log('berhenti...');
+  subscriber.disconnect();
   io.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 2000).unref();
 }

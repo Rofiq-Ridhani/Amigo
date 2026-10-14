@@ -1,6 +1,6 @@
 # AMIGO — TECHNICAL CONTRACT
 
-**Contract version:** `0.2.0` · **Status:** siap dipakai Backend + Frontend (semua keputusan terbuka sudah diberi nilai default di §14) · **Bahasa dokumen:** Indonesia, nama teknis tetap Inggris
+**Contract version:** `0.2.1` · **Status:** siap dipakai Backend + Frontend (semua keputusan terbuka sudah diberi nilai default di §14) · **Bahasa dokumen:** Indonesia, nama teknis tetap Inggris
 
 > Dokumen ini adalah **satu-satunya sumber acuan** untuk AI Backend dan AI Frontend.
 > Jika kode dan dokumen bertentangan, **jangan memperbaiki diam-diam di satu sisi** — ikuti prosedur di §0.3.
@@ -190,7 +190,7 @@ Percakapan **1-lawan-1 saja**. Tidak ada grup di v1.
 | `id` | bigint PK | |
 | `user_one_id` | FK → users.id, CASCADE | **Selalu yang lebih kecil** (`user_one_id < user_two_id`) |
 | `user_two_id` | FK → users.id, CASCADE | |
-| `last_message_id` | FK → messages.id NULL, `SET NULL` | Denormalisasi untuk daftar percakapan |
+| `last_message_id` | bigint unsigned NULL (**tanpa FK database**, lihat CC-002) | Denormalisasi untuk daftar percakapan; dijaga aplikasi |
 | `last_message_at` | timestamp NULL | Urutan daftar percakapan |
 | `created_at`, `updated_at` | | |
 
@@ -875,3 +875,20 @@ Socket.IO **Connection State Recovery tidak diandalkan** (tidak ada jaminan lint
 |---|---|---|---|
 | CC-000 | 2026-10-12 | Draft awal `0.1.0` | – |
 | CC-001 | 2026-10-12 | `0.2.0`: sesuaikan ke repo nyata (Laravel 13, Tailwind 4, PHPUnit), semua ❓ diberi default | Backend |
+| CC-002 | 2026-10-14 | `0.2.1` (Fase 2): (a) `conversations.last_message_id` tanpa FK database karena referensi melingkar dengan `messages`; (b) pada Fase 2 `POST …/messages` hanya menerima teks — `body` wajib dan `attachment_ids` ditolak `422` sampai Fase 6; (c) efek samping `notifications` dan event `unread:update` pada `POST …/messages` ditunda ke Fase 3/4; (d) `unread_count` pada Conversation sudah dihitung lewat query; (e) tidak ada perubahan nama field/event/endpoint | Backend (beri tahu Frontend) |
+
+## 15. Status Implementasi (diperbarui Backend tiap fase)
+
+| Bagian kontrak | Status |
+|---|---|
+| §D.2 `POST /login`, `/register`, `/logout`, `GET /api/v1/me`, `GET /api/v1/socket-token` | ✅ Fase 1 |
+| §D.3 `GET /api/v1/users`, `GET /api/v1/users/{id}` | ✅ Fase 1 |
+| §E presence: `presence:snapshot`, `presence:update` | ✅ Fase 1B |
+| §D.4 `GET/POST /api/v1/conversations`, `GET …/{id}/messages` (riwayat `before_id`, resync `updated_since`) | ✅ Fase 2 |
+| §D.5 `POST /api/v1/conversations/{id}/messages` (teks, reply, idempoten `client_uuid`) | ✅ Fase 2 |
+| §E `message:new` (+ACK), `message:delivery`, `message:delivered` (client→server), `sync:required` | ✅ Fase 2 |
+| §D.9 `/internal/v1/presence`, `/internal/v1/messages/delivered` | ✅ (internal, bukan untuk Frontend) |
+| §D.7 read/unread, `message:read`, `unread:update` | ⏳ Fase 3 |
+| §D.8 notifikasi, `notification:*` | ⏳ Fase 4 |
+| §D.5 edit/hapus/reaksi, `message:updated|deleted|reaction`, typing | ⏳ Fase 5 |
+| §D.6, §G lampiran | ⏳ Fase 6 |

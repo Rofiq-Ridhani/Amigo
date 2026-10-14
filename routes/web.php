@@ -1,6 +1,8 @@
 <?php
 
+use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\MeController;
+use App\Http\Controllers\Api\MessageController;
 use App\Http\Controllers\Api\SocketTokenController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\AuthController;
@@ -29,5 +31,13 @@ Route::middleware('auth')->group(function () {
         Route::get('/socket-token', SocketTokenController::class)->middleware('throttle:30,1');
         Route::get('/users', [UserController::class, 'index'])->middleware('throttle:30,1');
         Route::get('/users/{id}', [UserController::class, 'show'])->whereNumber('id');
+
+        // Fase 2: percakapan & pesan
+        Route::get('/conversations', [ConversationController::class, 'index']);
+        Route::post('/conversations', [ConversationController::class, 'store'])->middleware('throttle:30,1');
+        Route::get('/conversations/{id}/messages', [MessageController::class, 'index'])->whereNumber('id');
+        Route::post('/conversations/{id}/messages', [MessageController::class, 'store'])
+            ->whereNumber('id')
+            ->middleware('throttle:30,1');
     });
 });

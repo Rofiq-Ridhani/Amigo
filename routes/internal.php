@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Internal\DeliveredController;
 use App\Http\Controllers\Internal\PresenceController;
 use Illuminate\Support\Facades\Route;
 
@@ -10,3 +11,4 @@ use Illuminate\Support\Facades\Route;
  */
 
 Route::post('/presence', PresenceController::class);
+Route::post('/messages/delivered', DeliveredController::class);
