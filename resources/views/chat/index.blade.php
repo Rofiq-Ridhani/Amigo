@@ -9,7 +9,11 @@
     <aside class="flex w-full flex-col border-r border-slate-200 bg-white group-data-[open=true]:hidden md:w-96 md:group-data-[open=true]:flex">
         <header class="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
             <div class="min-w-0">
-                <p class="truncate text-sm font-semibold text-slate-900">{{ auth()->user()->name }}</p>
+                <div class="flex items-center gap-2">
+                    <p class="truncate text-sm font-semibold text-slate-900">{{ auth()->user()->name }}</p>
+                    <span id="total-unread" hidden role="status"
+                          class="shrink-0 rounded-full bg-brand-600 px-2 py-0.5 text-[11px] font-medium text-white"></span>
+                </div>
                 <p class="flex items-center gap-1.5 text-xs text-slate-500">
                     <span id="conn-dot" class="h-2 w-2 rounded-full bg-slate-300"></span>
                     <span id="conn-status" aria-live="polite">Menyambung…</span>
@@ -102,10 +106,11 @@
                 <span data-avatar class="flex h-10 w-10 items-center justify-center rounded-full bg-brand-100 text-sm font-semibold text-brand-700"></span>
                 <span data-dot class="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-white bg-slate-300"></span>
             </span>
-            <span class="min-w-0">
+            <span class="min-w-0 flex-1">
                 <span data-name class="block truncate text-sm font-medium text-slate-900"></span>
                 <span data-status class="block truncate text-xs text-slate-500"></span>
             </span>
+            <span data-unread hidden class="ml-auto shrink-0 rounded-full bg-brand-600 px-2 py-0.5 text-xs font-medium text-white"></span>
         </button>
     </li>
 </template>

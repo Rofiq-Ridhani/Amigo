@@ -1,12 +1,19 @@
 // resources/js/conversation.js — tampilan percakapan (Fase 2): riwayat, kirim, optimistic UI, ACK, resync
-import { createConversation, getConversations, getMessages, sendMessage } from "./api.js";
+import { createConversation, getConversations, getMessages, markRead, sendMessage } from "./api.js";
 import { EV } from "./events.js";
 import { formatTime, lastSeenText } from "./format.js";
+import { applyUnread, registerConversation } from "./unread.js";
 
 const $ = (id) => document.getElementById(id);
 const PAGE = 30;
 const MAX_LEN = 2000; // §D.5 — hanya untuk UX; validasi sebenarnya di server
-const STATUS_TEXT = { sending: "Mengirim…", failed: "Gagal terkirim", sent: "Terkirim", delivered: "Sampai", read: "Dibaca" };
+const STATUS_TEXT = { sending: "Mengirim…", failed: "Gagal terkirim" };
+const TICK = {
+    sent: { t: "✓", label: "Terkirim", c: "text-white/70" },
+    delivered: { t: "✓✓", label: "Sampai", c: "text-white/70" },
+    read: { t: "✓✓", label: "Dibaca", c: "text-sky-200" },
+};
+const RANK = { sent: 1, delivered: 2, read: 3 }; // status tidak pernah turun (§H.2)
 
 let sock = null;
 let isOnline = () => false;
@@ -14,6 +21,7 @@ let onActive = () => {};
 let current = null; // { id, peer, token, hasMoreBefore, oldestId, serverTime, loadingOlder }
 let tokenSeq = 0;
 let connectedBefore = false;
+let readTimer = null;
 const byUuid = new Map(); // client_uuid -> Message (+ status lokal "sending"/"failed" untuk pesan optimistik)
 const acked = new Set(); // id pesan masuk yang sudah di-ACK / dilaporkan delivered
 const me = () => window.AMIGO.currentUser.id;
@@ -28,7 +36,14 @@ function sorted() {
 function upsert(m) {
     const old = byUuid.get(m.client_uuid);
     if (old && old.id != null && (m.revision ?? 0) < (old.revision ?? 0)) return;
-    byUuid.set(m.client_uuid, { ...m });
+    const next = { ...m };
+    if (old && (RANK[old.status] ?? 0) > (RANK[next.status] ?? 0)) {
+        // data usang tidak boleh menurunkan status (mis. respons POST tiba setelah event delivery)
+        next.status = old.status;
+        next.delivered_at = old.delivered_at ?? next.delivered_at;
+        next.read_at = old.read_at ?? next.read_at;
+    }
+    byUuid.set(m.client_uuid, next);
 }
 
 // ---------- render (hanya textContent / createElement) ----------
@@ -45,6 +60,8 @@ function buildItem(m) {
     const deleted = m.deleted_at != null;
     const li = document.createElement("li");
     li.className = mine ? "flex justify-end" : "flex justify-start";
+    if (m.id != null) li.dataset.id = String(m.id);
+    if (!mine && m.id != null && !m.read_at && !deleted) li.dataset.unread = "1"; // kandidat "dibaca"
 
     const bubble = document.createElement("div");
     bubble.className = (mine ? "bg-brand-600 text-white" : "border border-slate-200 bg-white text-slate-900") + " max-w-[85%] rounded-2xl px-3 py-2 text-sm md:max-w-[70%]";
@@ -73,7 +90,16 @@ function buildItem(m) {
     meta.append(time);
     if (mine && !deleted) {
         const st = document.createElement("span");
-        st.textContent = STATUS_TEXT[m.status] ?? "";
+        const tick = TICK[m.status];
+        if (tick) {
+            st.className = tick.c;
+            st.textContent = tick.t;
+            st.title = tick.label;
+            st.setAttribute("role", "img");
+            st.setAttribute("aria-label", tick.label);
+        } else {
+            st.textContent = STATUS_TEXT[m.status] ?? "";
+        }
         meta.append(st);
         if (m.status === "failed") {
             const btn = document.createElement("button");
@@ -95,6 +121,7 @@ function render({ bottom = false } = {}) {
     $("message-list").replaceChildren(...sorted().map(buildItem));
     setMsgState(byUuid.size === 0 ? "Belum ada pesan. Sapa duluan!" : "");
     if (bottom || nearBottom) sc.scrollTop = sc.scrollHeight;
+    scheduleRead();
 }
 
 function paintHeader() {
@@ -212,7 +239,7 @@ async function resync() {
 // ---------- membuka percakapan ----------
 async function openPeer(peer, conv = null) {
     const tk = ++tokenSeq;
-    current = { id: conv?.id ?? null, peer: { ...peer }, token: tk, hasMoreBefore: false, oldestId: null, serverTime: null, loadingOlder: false };
+    current = { id: conv?.id ?? null, peer: { ...peer }, token: tk, hasMoreBefore: false, oldestId: null, serverTime: null, loadingOlder: false, readUpTo: 0 };
     byUuid.clear();
     $("message-list").replaceChildren();
     show(true);
@@ -224,6 +251,7 @@ async function openPeer(peer, conv = null) {
         if (!conv) conv = await createConversation(peer.id);
         if (current?.token !== tk) return;
         current.id = conv.id;
+        registerConversation(conv);
         current.peer = { ...(conv.peer ?? peer) };
         paintHeader();
         setUrl(conv.id);
@@ -238,6 +266,7 @@ async function openPeer(peer, conv = null) {
 export const openWithUser = (user) => openPeer(user);
 
 function closeConversation() {
+    clearTimeout(readTimer);
     tokenSeq += 1;
     current = null;
     byUuid.clear();
@@ -295,6 +324,42 @@ function retry(uuid) {
     post(m);
 }
 
+// ---------- tandai dibaca (§H.2, §D.7) ----------
+// id pesan masuk terbaru yang belum dibaca dan SEDANG terlihat di area gulir
+function latestVisibleUnreadId() {
+    const box = $("message-scroll").getBoundingClientRect();
+    let best = 0;
+    $("message-list").querySelectorAll("li[data-unread]").forEach((li) => {
+        const r = li.getBoundingClientRect();
+        if (r.bottom > box.top && r.top < box.bottom) best = Math.max(best, Number(li.dataset.id));
+    });
+    return best;
+}
+
+function scheduleRead() {
+    clearTimeout(readTimer);
+    readTimer = setTimeout(markReadNow, 500); // debounce 500 ms
+}
+
+async function markReadNow() {
+    if (!current?.id || document.visibilityState !== "visible") return;
+    const upTo = latestVisibleUnreadId();
+    if (!upTo || upTo <= current.readUpTo) return;
+    const tk = current.token;
+    const prev = current.readUpTo;
+    current.readUpTo = upTo; // cegah panggilan ganda selama request berjalan
+    try {
+        const res = await markRead(current.id, upTo);
+        applyUnread(res); // §H.4: GANTI angka unread dengan nilai server
+        if (current?.token !== tk) return;
+        byUuid.forEach((m) => {
+            if (m.recipient_id === me() && m.id != null && m.id <= upTo && !m.read_at) m.read_at = res.read_at;
+        });
+    } catch {
+        if (current?.token === tk) current.readUpTo = prev; // boleh dicoba lagi pada pemicu berikutnya
+    }
+}
+
 // ---------- inisialisasi ----------
 export function initConversation({ online, onActive: cb }) {
     isOnline = (id) => online.has(id);
@@ -322,6 +387,9 @@ export function initConversation({ online, onActive: cb }) {
     });
     $("load-older").addEventListener("click", loadOlder);
     $("back-button").addEventListener("click", closeConversation);
+    $("message-scroll").addEventListener("scroll", scheduleRead, { passive: true });
+    document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && scheduleRead());
+    window.addEventListener("focus", scheduleRead);
 }
 
 export function bindSocket(s) {
@@ -347,6 +415,21 @@ export function bindSocket(s) {
             if (ids.has(m.id) && m.status !== "read") {
                 m.status = "delivered";
                 m.delivered_at = data.delivered_at;
+                changed = true;
+            }
+        });
+        if (changed) render();
+    });
+
+    // §E.3: semua pesan SAYA di percakapan itu dengan id <= up_to menjadi "read"
+    sock.on(EV.MESSAGE_READ, ({ data }) => {
+        if (data.conversation_id !== current?.id) return;
+        let changed = false;
+        byUuid.forEach((m) => {
+            if (m.sender_id === me() && m.id != null && m.id <= data.up_to_message_id && m.status !== "read") {
+                m.status = "read";
+                m.read_at = data.read_at;
+                m.delivered_at = m.delivered_at ?? data.read_at;
                 changed = true;
             }
         });

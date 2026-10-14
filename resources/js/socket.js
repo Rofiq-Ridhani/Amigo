@@ -33,6 +33,7 @@ export async function connectSocket() {
         });
     }
 
+    const listeners = new Map(); // event -> Set(handler)
     const seen = new Set();
     const order = [];
     const isDuplicate = (id) => {
@@ -45,14 +46,19 @@ export async function connectSocket() {
     };
 
     return {
+        // Satu listener mentah per event: dedup SEKALI, lalu diteruskan ke semua handler terdaftar
         on(event, handler) {
-            raw.on(event, (envelope, ack) => {
-                if (isDuplicate(envelope?.event_id)) {
-                    if (typeof ack === "function") ack({ ok: true });
-                    return;
-                }
-                handler(envelope, ack);
-            });
+            if (!listeners.has(event)) {
+                listeners.set(event, new Set());
+                raw.on(event, (envelope, ack) => {
+                    if (isDuplicate(envelope?.event_id)) {
+                        if (typeof ack === "function") ack({ ok: true });
+                        return;
+                    }
+                    listeners.get(event).forEach((h) => h(envelope, ack));
+                });
+            }
+            listeners.get(event).add(handler);
         },
         onLifecycle(name, handler) {
             raw.on(name, handler);

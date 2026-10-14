@@ -115,3 +115,18 @@ export async function sendMessage(conversationId, { clientUuid, body, replyToId 
     if (replyToId) payload.reply_to_id = replyToId;
     return (await request("POST", `/conversations/${encodeURIComponent(conversationId)}/messages`, { body: payload })).data.message;
 }
+
+// ---- Fase 3: baca & unread (kontrak §D.7) ----
+
+// POST /api/v1/conversations/{id}/read {up_to_message_id} -> { data: { conversation_id, read_count, unread_count, total_unread, read_at } }
+export async function markRead(conversationId, upToMessageId) {
+    if (USE_MOCKS) return (await loadMocks()).mockMarkRead(conversationId, upToMessageId);
+    const path = `/conversations/${encodeURIComponent(conversationId)}/read`;
+    return (await request("POST", path, { body: { up_to_message_id: upToMessageId } })).data;
+}
+
+// GET /api/v1/unread-counts -> { data: { total, by_conversation: [{ conversation_id, unread_count }] } }
+export async function getUnreadCounts() {
+    if (USE_MOCKS) return (await loadMocks()).mockGetUnreadCounts();
+    return (await request("GET", "/unread-counts")).data;
+}

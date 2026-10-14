@@ -4,6 +4,7 @@ import { connectSocket } from "./socket.js";
 import { EV } from "./events.js";
 import { lastSeenText } from "./format.js";
 import { bindSocket, initConversation, onPresence, openFromQuery, openWithUser, refreshPeerStatus } from "./conversation.js";
+import { bindUnreadSocket, initUnread, refreshAll, totalUnread, unreadForPeer } from "./unread.js";
 
 const PER_PAGE = 20;
 const online = new Set(); // hanya dari presence:snapshot / presence:update (bukan REST)
@@ -28,6 +29,27 @@ function setActive(id) {
     rows.forEach((row, uid) => row.li.classList.toggle("bg-brand-50", uid === id));
 }
 
+const badgeText = (n) => (n > 99 ? "99+" : String(n));
+
+function paintUnread(id) {
+    const row = rows.get(id);
+    if (!row) return;
+    const n = unreadForPeer(id);
+    const badge = row.li.querySelector("[data-unread]");
+    badge.hidden = n === 0;
+    badge.textContent = badgeText(n);
+    badge.setAttribute("aria-label", `${n} pesan belum dibaca`);
+}
+
+function repaintUnread() {
+    rows.forEach((_, id) => paintUnread(id));
+    const t = totalUnread();
+    const el = $("total-unread");
+    el.hidden = t === 0;
+    el.textContent = badgeText(t);
+    el.setAttribute("aria-label", `${t} pesan belum dibaca`);
+}
+
 function addRow(user) {
     const li = $("user-item-template").content.firstElementChild.cloneNode(true);
     li.querySelector("[data-avatar]").textContent = (user.name.trim()[0] ?? "?").toUpperCase();
@@ -36,6 +58,7 @@ function addRow(user) {
     $("user-list").appendChild(li);
     rows.set(user.id, { li, user });
     paintRow(user.id);
+    paintUnread(user.id);
     li.classList.toggle("bg-brand-50", user.id === activeId);
 }
 
@@ -102,7 +125,8 @@ async function startRealtime() {
         onPresence(data.user_id, data.last_seen_at);
     });
 
-    bindSocket(sock); // message:new, message:delivery, sync:required, resync saat reconnect
+    bindSocket(sock); // message:new, message:delivery, message:read, sync:required, resync saat reconnect
+    bindUnreadSocket(sock); // unread:update, polling 60 dtk, refresh saat reconnect
 
     // §D.2: client wajib memutus socket saat logout (form tetap submit normal)
     $("logout-form").addEventListener("submit", () => sock.disconnect());
@@ -110,7 +134,9 @@ async function startRealtime() {
 
 export function initChatIndex() {
     if (USE_MOCKS) $("mock-badge").classList.remove("hidden");
+    initUnread({ onChange: repaintUnread });
     initConversation({ online, onActive: setActive });
+    refreshAll(); // §H.6 langkah 1–2 saat halaman dibuka
 
     let timer;
     $("user-search").addEventListener("input", (e) => {
