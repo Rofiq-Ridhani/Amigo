@@ -35,6 +35,8 @@ Server → client (semua memakai envelope `{ event_id, occurred_at, data }`):
 | `message:delivery` | pengirim pesan | – | `{ conversation_id, message_ids: [..], delivered_at }` |
 | `message:read` | pengirim pesan | – | `{ conversation_id, reader_id, up_to_message_id, read_at }` |
 | `unread:update` | semua tab satu user | – | `{ conversation_id, unread_count, total_unread }` (angka absolut) |
+| `notification:new` | penerima notifikasi | **ya** (hanya dicatat) | `{ notification: Notification, unread_count }` |
+| `notification:read` | semua tab satu user | – | `{ ids: [..] \| null, all: false, unread_count }` |
 | `sync:required` | semua | – | `{ reason: "redis_reconnected", server_time }` |
 
 Client → server:

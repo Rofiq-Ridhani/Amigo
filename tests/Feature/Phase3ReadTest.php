@@ -139,6 +139,7 @@ class Phase3ReadTest extends TestCase
 
         config(['chat.realtime_enabled' => true]);
         $published = [];
+        Redis::shouldReceive('publish')->times(2)->with('chat.notifications', Mockery::any()); // notification:new x2
         Redis::shouldReceive('publish')
             ->times(4) // 2 pesan x (message:new + unread:update)
             ->with('chat.messages', Mockery::on(function ($json) use (&$published) {

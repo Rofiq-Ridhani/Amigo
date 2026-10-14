@@ -18,10 +18,12 @@ class MessageService
     public function __construct(
         private readonly RealtimePublisher $realtime,
         private readonly UnreadService $unread,
+        private readonly NotificationService $notifications,
     ) {}
 
     /**
-     * Simpan pesan lalu publish `message:new` dan `unread:update`. Idempoten berdasarkan client_uuid.
+     * Simpan pesan + notifikasi (satu transaksi), lalu publish `message:new`, `unread:update`,
+     * `notification:new`. Idempoten berdasarkan client_uuid.
      *
      * @return array{0:Message,1:bool} [pesan, apakah baru dibuat]
      */
@@ -36,7 +38,7 @@ class MessageService
         $recipientId = $conversation->peerIdFor($sender->id);
 
         try {
-            $message = DB::transaction(function () use ($conversation, $sender, $recipientId, $clientUuid, $body, $replyToId) {
+            [$message, $notification] = DB::transaction(function () use ($conversation, $sender, $recipientId, $clientUuid, $body, $replyToId) {
                 $message = Message::create([
                     'conversation_id' => $conversation->id,
                     'sender_id' => $sender->id,
@@ -52,7 +54,10 @@ class MessageService
                     'last_message_at' => $message->created_at,
                 ])->save();
 
-                return $message;
+                // Notifikasi disimpan SEBELUM event dipublish (kontrak §12 & materi)
+                $notification = $this->notifications->createForMessage($message, $sender->name);
+
+                return [$message, $notification];
             });
         } catch (UniqueConstraintViolationException) {
             // Dua request dengan client_uuid sama berlomba; yang kalah mengambil milik pemenang.
@@ -76,6 +81,9 @@ class MessageService
             'unread_count' => $this->unread->forConversation($recipientId, $conversation->id),
             'total_unread' => $this->unread->total($recipientId),
         ]);
+
+        // Toast + badge notifikasi
+        $this->notifications->publishNew($notification);
 
         return [$message, true];
     }

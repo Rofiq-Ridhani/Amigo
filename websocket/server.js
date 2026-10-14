@@ -4,8 +4,9 @@
 //   Fase 2 : subscriber Redis -> message:new (+ACK) -> delivered, message:delivered dari client,
 //            sync:required saat Redis tersambung kembali.
 //   Fase 3 : meneruskan message:read dan unread:update dari Redis ke room tujuan.
+//   Fase 4 : meneruskan notification:new (+ACK, hanya dicatat) dan notification:read.
 // Kontrak: AMIGO_TECHNICAL_CONTRACT.md §E, §H, §D.9, §J.
-// Akan menyusul: event notifikasi (Fase 4), typing & edit/hapus/reaksi (Fase 5).
+// Akan menyusul: typing & edit/hapus/reaksi (Fase 5).
 
 const path = require('node:path');
 const http = require('node:http');
@@ -44,7 +45,13 @@ const CHAT_CHANNEL = process.env.REDIS_CHAT_CHANNEL || 'chat.messages';
 const NOTIFICATION_CHANNEL = process.env.REDIS_NOTIFICATION_CHANNEL || 'chat.notifications';
 
 // Event yang BOLEH datang dari Redis (daftar putih). Bertambah di fase berikutnya.
-const ALLOWED_REDIS_EVENTS = new Set(['message:new', 'message:read', 'unread:update']);
+const ALLOWED_REDIS_EVENTS = new Set([
+  'message:new',
+  'message:read',
+  'unread:update',
+  'notification:new',
+  'notification:read',
+]);
 
 function fatal(msg) {
   console.error(`[amigo-ws] FATAL: ${msg}`);
@@ -260,6 +267,10 @@ function dispatchEnvelope(env) {
           if (env.event === 'message:new') {
             const messageId = env.data.message && env.data.message.id;
             if (isPositiveInt(messageId)) markDelivered(userId, [messageId]);
+          } else if (env.event === 'notification:new') {
+            // ACK notifikasi hanya dicatat (kontrak §E.3): tidak ada event ke user lain
+            const notificationId = env.data.notification && env.data.notification.id;
+            log(`notification:new diterima client user=${userId} id=${notificationId}`);
           }
         });
     } else {

@@ -11,12 +11,14 @@ use Illuminate\Support\Facades\DB;
 
 /**
  * Menandai pesan sebagai dibaca (kontrak §D.7, §H.2). Idempoten.
+ * Notifikasi terkait pesan yang dibaca ikut ditandai terbaca (kontrak §H.5).
  */
 class ReadReceiptService
 {
     public function __construct(
         private readonly RealtimePublisher $realtime,
         private readonly UnreadService $unread,
+        private readonly NotificationService $notifications,
     ) {}
 
     /**
@@ -26,7 +28,7 @@ class ReadReceiptService
     {
         $now = now();
 
-        $readCount = DB::transaction(function () use ($conversation, $reader, $upToMessageId, $now) {
+        [$messageIds, $notificationIds] = DB::transaction(function () use ($conversation, $reader, $upToMessageId, $now) {
             // Hanya pesan MILIK pembaca (recipient) di percakapan ini yang belum dibaca
             $ids = Message::query()
                 ->where('conversation_id', $conversation->id)
@@ -36,7 +38,7 @@ class ReadReceiptService
                 ->pluck('id');
 
             if ($ids->isEmpty()) {
-                return 0;
+                return [[], []];
             }
 
             // dibaca => pasti sudah diterima (delivered)
@@ -48,9 +50,12 @@ class ReadReceiptService
                 'revision' => DB::raw('revision + 1'),
             ]);
 
-            return $ids->count();
+            $messageIds = $ids->map(fn ($id) => (int) $id)->all();
+
+            return [$messageIds, $this->notifications->markForMessages($reader->id, $messageIds)];
         });
 
+        $readCount = count($messageIds);
         $unreadCount = $this->unread->forConversation($reader->id, $conversation->id);
         $totalUnread = $this->unread->total($reader->id);
 
@@ -65,12 +70,17 @@ class ReadReceiptService
                 'read_at' => Iso::format($now),
             ]);
 
-            // Semua tab pembaca memperbarui badge
+            // Semua tab pembaca memperbarui badge pesan
             $this->realtime->publish('messages', 'unread:update', [$reader->id], [
                 'conversation_id' => $conversation->id,
                 'unread_count' => $unreadCount,
                 'total_unread' => $totalUnread,
             ]);
+
+            // ...dan badge notifikasi
+            if ($notificationIds !== []) {
+                $this->notifications->publishRead($reader->id, $notificationIds, false);
+            }
         }
 
         return [
