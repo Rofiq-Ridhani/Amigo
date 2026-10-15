@@ -6,6 +6,7 @@ use App\Support\Iso;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 /**
@@ -43,6 +44,28 @@ class Message extends Model
         return $this->belongsTo(self::class, 'reply_to_id')->withTrashed();
     }
 
+    public function reactions(): HasMany
+    {
+        return $this->hasMany(MessageReaction::class)->orderBy('id');
+    }
+
+    /**
+     * Daftar reaksi dalam bentuk kontrak §D.1: [{user_id, emoji}].
+     *
+     * @return array<int,array{user_id:int,emoji:string}>
+     */
+    public function reactionsForApi(): array
+    {
+        if ($this->trashed()) {
+            return [];
+        }
+
+        return $this->reactions
+            ->map(fn (MessageReaction $r) => ['user_id' => (int) $r->user_id, 'emoji' => $r->emoji])
+            ->values()
+            ->all();
+    }
+
     /** sent -> delivered -> read (kontrak §H.2). Dihitung server, bukan client. */
     public function status(): string
     {
@@ -71,7 +94,7 @@ class Message extends Model
             'body' => $deleted ? null : $this->body,
             'reply_to' => $deleted ? null : $this->replyPreview(),
             'attachments' => [],   // Fase 6
-            'reactions' => [],     // Fase 5
+            'reactions' => $this->reactionsForApi(),
             'status' => $this->status(),
             'delivered_at' => Iso::format($this->delivered_at),
             'read_at' => Iso::format($this->read_at),

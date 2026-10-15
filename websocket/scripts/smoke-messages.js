@@ -230,6 +230,23 @@ const publish = (obj, channel = `smoke_database_${CHANNEL}`) =>
   check('user lain TIDAK menerima notifikasi', !a.events.slice(mA).some((e) => e.name.startsWith('notification:')) && !c.events.slice(mC).some((e) => e.name.startsWith('notification:')));
   n2.close();
 
+  console.log('\n[8] Edit, hapus, reaksi (Fase 5)');
+  const stamp = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const mk = (event, data) => ({ event_id: crypto.randomUUID(), event, occurred_at: stamp, to: [1, 2], ack_user_id: null, data });
+  const mC2 = c.events.length;
+  await publish(mk('message:updated', { message: { id: 900001, conversation_id: 1, body: 'Diedit', revision: 2 } }));
+  await publish(mk('message:deleted', { conversation_id: 1, message_id: 900001, revision: 3, deleted_at: stamp }));
+  await publish(mk('message:reaction', { conversation_id: 1, message_id: 900002, revision: 2, reactions: [{ user_id: 2, emoji: '\u{1F44D}' }] }));
+  for (const name of ['message:updated', 'message:deleted', 'message:reaction']) {
+    const ga = await waitFor(a, (e) => e.name === name);
+    const gb = await waitFor(b, (e) => e.name === name);
+    check(`${name}: pengirim dan penerima sama-sama menerima`, !!ga && !!gb);
+  }
+  const reaction = a.events.find((e) => e.name === 'message:reaction');
+  check('message:reaction membawa seluruh daftar reaksi (emoji utuh)', reaction?.env.data.reactions[0].emoji === '\u{1F44D}' && reaction.env.data.revision === 2);
+  await sleep(300);
+  check('user 3 tidak menerima event edit/hapus/reaksi', c.events.length === mC2);
+
   [a, b, c].forEach((s) => s.close());
   redis.disconnect();
   console.log(failed === 0 ? '\nSEMUA LULUS' : `\n${failed} TES GAGAL`);

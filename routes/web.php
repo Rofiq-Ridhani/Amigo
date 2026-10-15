@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\MeController;
+use App\Http\Controllers\Api\MessageActionController;
 use App\Http\Controllers\Api\MessageController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\ReadStateController;
@@ -47,6 +48,20 @@ Route::middleware('auth')->group(function () {
             ->whereNumber('id')
             ->middleware('throttle:60,1');
         Route::get('/unread-counts', [ReadStateController::class, 'counts']);
+
+        // Fase 5: edit, hapus, reaksi
+        Route::patch('/messages/{id}', [MessageActionController::class, 'update'])
+            ->whereNumber('id')
+            ->middleware('throttle:30,1');
+        Route::delete('/messages/{id}', [MessageActionController::class, 'destroy'])
+            ->whereNumber('id')
+            ->middleware('throttle:30,1');
+        Route::put('/messages/{id}/reaction', [MessageActionController::class, 'react'])
+            ->whereNumber('id')
+            ->middleware('throttle:60,1');
+        Route::delete('/messages/{id}/reaction', [MessageActionController::class, 'unreact'])
+            ->whereNumber('id')
+            ->middleware('throttle:60,1');
 
         // Fase 4: notifikasi
         Route::get('/notifications', [NotificationController::class, 'index']);

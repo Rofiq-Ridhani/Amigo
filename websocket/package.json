@@ -1,6 +1,6 @@
 {
   "name": "amigo-websocket",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Server Socket.IO untuk Amigo (kontrak §E, §H.1, §D.9)",
   "main": "server.js",
@@ -9,6 +9,7 @@
     "dev": "node --watch server.js",
     "smoke": "node scripts/smoke-test.js",
     "smoke:messages": "node scripts/smoke-messages.js",
+    "smoke:typing": "node scripts/smoke-typing.js",
     "listen": "node scripts/listen.js"
   },
   "engines": { "node": ">=18" },
