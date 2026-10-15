@@ -2,12 +2,16 @@
 
 namespace App\Services;
 
+use App\Models\Attachment;
 use App\Models\Message;
 use App\Models\MessageReaction;
 use App\Models\User;
 use App\Realtime\RealtimePublisher;
 use App\Support\Iso;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
+use Throwable;
 
 /**
  * Edit, hapus, dan reaksi pesan (kontrak §D.5). Validasi hak akses dilakukan di controller;
@@ -54,9 +58,11 @@ class MessageActionService
         }
 
         $now = now();
+        $files = Attachment::where('message_id', $message->id)->get(['disk', 'path']);
 
         DB::transaction(function () use ($message, $now) {
             MessageReaction::where('message_id', $message->id)->delete();
+            Attachment::where('message_id', $message->id)->delete();
 
             Message::whereKey($message->id)->update([
                 'deleted_at' => $now,
@@ -64,6 +70,8 @@ class MessageActionService
                 'revision' => DB::raw('revision + 1'),
             ]);
         });
+
+        $this->deleteFiles($files);
 
         $fresh = $this->fresh($message->id);
 
@@ -120,6 +128,18 @@ class MessageActionService
         return $removed ? [$this->publishReaction($message->id), true] : [$this->fresh($message->id), false];
     }
 
+    /** Hapus file lampiran dari storage setelah data di database terhapus (kontrak §D.5, CC-006). */
+    private function deleteFiles($files): void
+    {
+        foreach ($files as $file) {
+            try {
+                Storage::disk($file->disk)->delete($file->path);
+            } catch (Throwable $e) {
+                Log::warning('Gagal menghapus file lampiran', ['path' => $file->path, 'error' => $e->getMessage()]);
+            }
+        }
+    }
+
     private function bump(int $messageId): void
     {
         $now = now();
@@ -146,7 +166,7 @@ class MessageActionService
 
     private function fresh(int $messageId): Message
     {
-        return Message::withTrashed()->with(['replyTo', 'reactions'])->findOrFail($messageId);
+        return Message::withTrashed()->with(['replyTo.attachments', 'reactions', 'attachments'])->findOrFail($messageId);
     }
 
     /** @return array<int,int> */

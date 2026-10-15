@@ -44,6 +44,11 @@ class Message extends Model
         return $this->belongsTo(self::class, 'reply_to_id')->withTrashed();
     }
 
+    public function attachments(): HasMany
+    {
+        return $this->hasMany(Attachment::class)->orderBy('id');
+    }
+
     public function reactions(): HasMany
     {
         return $this->hasMany(MessageReaction::class)->orderBy('id');
@@ -93,7 +98,7 @@ class Message extends Model
             'recipient_id' => $this->recipient_id,
             'body' => $deleted ? null : $this->body,
             'reply_to' => $deleted ? null : $this->replyPreview(),
-            'attachments' => [],   // Fase 6
+            'attachments' => $deleted ? [] : $this->attachments->map(fn (Attachment $a) => $a->toApiArray())->values()->all(),
             'reactions' => $this->reactionsForApi(),
             'status' => $this->status(),
             'delivered_at' => Iso::format($this->delivered_at),
@@ -124,7 +129,7 @@ class Message extends Model
             'id' => $original->id,
             'sender_id' => $original->sender_id,
             'body_preview' => $deleted ? null : mb_substr((string) $original->body, 0, 100),
-            'has_attachments' => false,
+            'has_attachments' => ! $deleted && $original->attachments->isNotEmpty(),
             'deleted' => $deleted,
         ];
     }

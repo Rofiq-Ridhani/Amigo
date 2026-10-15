@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\AttachmentController;
 use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\MeController;
 use App\Http\Controllers\Api\MessageActionController;
@@ -62,6 +63,13 @@ Route::middleware('auth')->group(function () {
         Route::delete('/messages/{id}/reaction', [MessageActionController::class, 'unreact'])
             ->whereNumber('id')
             ->middleware('throttle:60,1');
+
+        // Fase 6: lampiran
+        Route::post('/attachments', [AttachmentController::class, 'store'])->middleware('throttle:10,1');
+        Route::delete('/attachments/{id}', [AttachmentController::class, 'destroy'])
+            ->whereNumber('id')
+            ->middleware('throttle:30,1');
+        Route::get('/attachments/{id}/content', [AttachmentController::class, 'content'])->whereNumber('id');
 
         // Fase 4: notifikasi
         Route::get('/notifications', [NotificationController::class, 'index']);

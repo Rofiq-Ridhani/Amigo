@@ -33,7 +33,7 @@ class MessageController extends Controller
 
         $base = Message::withTrashed()
             ->where('conversation_id', $conversation->id)
-            ->with(['replyTo', 'reactions']);
+            ->with(['replyTo.attachments', 'reactions', 'attachments']);
 
         $hasMoreBefore = false;
         $hasMore = false;
@@ -86,8 +86,10 @@ class MessageController extends Controller
 
         $data = $request->validate([
             'client_uuid' => ['required', 'uuid'],
-            // Fase 2: hanya teks. Lampiran (attachment_ids) menyusul di Fase 6.
-            'body' => ['required', 'string', 'max:'.config('chat.message_max_length')],
+            // Teks boleh kosong bila ada lampiran, dan sebaliknya (kontrak §D.5)
+            'body' => ['nullable', 'string', 'max:'.config('chat.message_max_length'), 'required_without:attachment_ids'],
+            'attachment_ids' => ['nullable', 'array', 'max:'.config('chat.limits.attachments_per_message')],
+            'attachment_ids.*' => ['integer', 'min:1', 'distinct'],
             'reply_to_id' => [
                 'nullable',
                 'integer',
@@ -95,15 +97,15 @@ class MessageController extends Controller
                     ->where('conversation_id', $conversation->id)
                     ->whereNull('deleted_at'),
             ],
-            'attachment_ids' => ['prohibited'],
         ]);
 
         [$message, $created] = $this->messages->send(
             $conversation,
             $user,
             $data['client_uuid'],
-            $data['body'],
+            $data['body'] ?? null,
             isset($data['reply_to_id']) ? (int) $data['reply_to_id'] : null,
+            $data['attachment_ids'] ?? [],
         );
 
         return ApiResponse::success(
