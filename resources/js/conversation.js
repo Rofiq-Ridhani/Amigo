@@ -1,5 +1,5 @@
 // resources/js/conversation.js — tampilan percakapan (Fase 2): riwayat, kirim, optimistic UI, ACK, resync
-import { createConversation, getConversations, getMessages, markRead, sendMessage } from "./api.js";
+import { createConversation, getConversations, getMessages, getUser, markRead, sendMessage } from "./api.js";
 import { EV } from "./events.js";
 import { formatTime, lastSeenText } from "./format.js";
 import { applyUnread, registerConversation } from "./unread.js";
@@ -276,16 +276,28 @@ function closeConversation() {
 }
 
 // Deep-link /chat?conversation={id} (§B.3); memakai GET /conversations (hanya halaman 1)
-export async function openFromQuery() {
-    const id = Number(new URLSearchParams(window.location.search).get("conversation"));
-    if (!id) return;
+export const currentConversationId = () => current?.id ?? null;
+
+// Dipakai deep-link dan klik notifikasi. Jika percakapan tidak ada di 50 teratas tetapi id pengirim diketahui,
+// ambil user (GET /users/{id}) lalu POST /conversations (idempoten) untuk membukanya.
+export async function openConversationById(id, peerId = null) {
+    if (current?.id === id) {
+        show(true);
+        return;
+    }
     try {
         const { conversations } = await getConversations({ perPage: 50 });
         const c = conversations.find((x) => x.id === id);
-        if (c) openPeer(c.peer, c);
+        if (c) return openPeer(c.peer, c);
+        if (peerId) return openPeer(await getUser(peerId));
     } catch {
         /* abaikan: halaman tetap menampilkan daftar pengguna */
     }
+}
+
+export function openFromQuery() {
+    const id = Number(new URLSearchParams(window.location.search).get("conversation"));
+    if (id) openConversationById(id);
 }
 
 // ---------- kirim (optimistic UI, §H.7) ----------
@@ -342,7 +354,7 @@ function scheduleRead() {
 }
 
 async function markReadNow() {
-    if (!current?.id || document.visibilityState !== "visible") return;
+    if (!current?.id || document.visibilityState !== "visible" || !document.hasFocus()) return; // §H.2: tab terlihat + jendela fokus
     const upTo = latestVisibleUnreadId();
     if (!upTo || upTo <= current.readUpTo) return;
     const tk = current.token;
@@ -353,7 +365,7 @@ async function markReadNow() {
         applyUnread(res); // §H.4: GANTI angka unread dengan nilai server
         if (current?.token !== tk) return;
         byUuid.forEach((m) => {
-            if (m.recipient_id === me() && m.id != null && m.id <= upTo && !m.read_at) m.read_at = res.read_at;
+            if (m.recipient_id === me() && m.id != null && m.id <= upTo && !m.read_at) m.read_at = res.read_at ?? new Date().toISOString(); // CC-003(a): read_at null jika sudah terbaca di tab lain
         });
     } catch {
         if (current?.token === tk) current.readUpTo = prev; // boleh dicoba lagi pada pemicu berikutnya
