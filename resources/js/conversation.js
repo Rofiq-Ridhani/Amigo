@@ -1,5 +1,7 @@
 // resources/js/conversation.js — tampilan percakapan (Fase 2): riwayat, kirim, optimistic UI, ACK, resync
-import { createConversation, getConversations, getMessages, getUser, markRead, sendMessage } from "./api.js";
+import {
+    clearReaction, createConversation, deleteMessage, editMessage, getConversations, getMessages, getUser, markRead, sendMessage, setReaction,
+} from "./api.js";
 import { EV } from "./events.js";
 import { formatTime, lastSeenText } from "./format.js";
 import { applyUnread, registerConversation } from "./unread.js";
@@ -25,6 +27,25 @@ let readTimer = null;
 const byUuid = new Map(); // client_uuid -> Message (+ status lokal "sending"/"failed" untuk pesan optimistik)
 const acked = new Set(); // id pesan masuk yang sudah di-ACK / dilaporkan delivered
 const me = () => window.AMIGO.currentUser.id;
+
+const EDIT_WINDOW_MS = 15 * 60_000; // D-09: hanya petunjuk UI; server yang memutuskan (409 EDIT_WINDOW_EXPIRED)
+const TYPING_REPEAT_MS = 3000; // §H.3: ulangi typing:start tiap 3 dtk selama mengetik
+const TYPING_IDLE_MS = 3000; // typing:stop setelah 3 dtk tidak mengetik
+const TYPING_HIDE_MS = 5000; // sembunyikan indikator lawan bicara bila 5 dtk tanpa update
+const ERR_TEXT = {
+    EDIT_WINDOW_EXPIRED: "Waktu edit (15 menit) sudah lewat.",
+    MESSAGE_DELETED: "Pesan ini sudah dihapus.",
+    FORBIDDEN: "Hanya pengirim yang dapat melakukan ini.",
+    NOT_FOUND: "Pesan tidak ditemukan.",
+    VALIDATION_ERROR: "Isi pesan tidak valid.",
+    RATE_LIMITED: "Terlalu banyak permintaan. Coba lagi sebentar.",
+    SERVICE_UNAVAILABLE: "Layanan sedang tidak tersedia. Coba lagi nanti.",
+};
+// ui.compose = { mode: "reply" | "edit", uuid } (target = pesan di byUuid)
+const ui = { activeUuid: null, focusUuid: null, compose: null, peerTyping: false, peerTypingTimer: null, errorTimer: null };
+const typing = { active: false, convId: null, lastSent: 0, stopTimer: null, blockedConv: null, pauseUntil: 0 };
+const TYPING_BACKOFF_MS = 15_000; // setelah RATE_LIMITED (Node maks 20 typing:*/menit/socket, §I.9)
+const allowList = () => (Array.isArray(window.AMIGO.reactionEmojis) ? window.AMIGO.reactionEmojis : []); // emoji WAJIB dari sini
 
 // ---------- state ----------
 function sorted() {
@@ -55,16 +76,82 @@ function setMsgState(text, retry = null) {
     b.onclick = retry;
 }
 
+const canAct = (m) => m.id != null && m.deleted_at == null;
+const mineReaction = (m) => m.reactions?.find((r) => r.user_id === me())?.emoji ?? null;
+
+function showActionError(err) {
+    const el = $("compose-error");
+    el.textContent = ERR_TEXT[err?.code] ?? err?.message ?? "Terjadi kesalahan. Coba lagi.";
+    el.hidden = false;
+    clearTimeout(ui.errorTimer);
+    ui.errorTimer = setTimeout(() => (el.hidden = true), 6000);
+}
+
+function smallBtn(label, onClick, cls = "text-slate-700") {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = `rounded-lg px-2 py-1 text-xs hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 ${cls}`;
+    b.textContent = label;
+    b.addEventListener("click", onClick);
+    return b;
+}
+
+function buildReactions(m) {
+    const counts = new Map();
+    m.reactions.forEach((r) => counts.set(r.emoji, (counts.get(r.emoji) ?? 0) + 1));
+    const mineEmoji = mineReaction(m);
+    const wrap = document.createElement("div");
+    wrap.className = "flex flex-wrap gap-1";
+    counts.forEach((n, emoji) => {
+        const isMine = emoji === mineEmoji;
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = (isMine ? "border-brand-600 bg-brand-50" : "border-slate-200 bg-white") + " rounded-full border px-2 py-0.5 text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600";
+        b.textContent = n > 1 ? `${emoji} ${n}` : emoji;
+        b.setAttribute("aria-label", `Reaksi ${emoji}, ${n} orang${isMine ? ", termasuk Anda" : ""}`);
+        b.setAttribute("aria-pressed", String(isMine));
+        b.addEventListener("click", () => toggleReaction(m.client_uuid, emoji));
+        wrap.append(b);
+    });
+    return wrap;
+}
+
+function buildActions(m, mine) {
+    const bar = document.createElement("div");
+    bar.className = "flex flex-wrap items-center gap-0.5 rounded-xl border border-slate-200 bg-white p-1 shadow-sm";
+    const mineEmoji = mineReaction(m);
+    allowList().forEach((emoji) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = (emoji === mineEmoji ? "bg-brand-100" : "hover:bg-slate-100") + " rounded-lg px-1.5 py-1 text-base focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600";
+        b.textContent = emoji;
+        b.setAttribute("aria-label", `Reaksi ${emoji}`);
+        b.setAttribute("aria-pressed", String(emoji === mineEmoji));
+        b.addEventListener("click", () => toggleReaction(m.client_uuid, emoji));
+        bar.append(b);
+    });
+    bar.append(smallBtn("Balas", () => startReply(m.client_uuid)));
+    if (mine && Date.now() - Date.parse(m.created_at) < EDIT_WINDOW_MS) bar.append(smallBtn("Edit", () => startEdit(m.client_uuid)));
+    if (mine) bar.append(smallBtn("Hapus", () => removeMessage(m.client_uuid), "text-red-700"));
+    return bar;
+}
+
 function buildItem(m) {
     const mine = m.sender_id === me();
     const deleted = m.deleted_at != null;
     const li = document.createElement("li");
     li.className = mine ? "flex justify-end" : "flex justify-start";
+    li.dataset.uuid = m.client_uuid;
     if (m.id != null) li.dataset.id = String(m.id);
     if (!mine && m.id != null && !m.read_at && !deleted) li.dataset.unread = "1"; // kandidat "dibaca"
 
+    const col = document.createElement("div");
+    col.className = (mine ? "items-end" : "items-start") + " flex min-w-0 max-w-[85%] flex-col gap-1 md:max-w-[70%]";
+    const row = document.createElement("div");
+    row.className = (mine ? "flex-row-reverse" : "flex-row") + " flex max-w-full items-center gap-1";
+
     const bubble = document.createElement("div");
-    bubble.className = (mine ? "bg-brand-600 text-white" : "border border-slate-200 bg-white text-slate-900") + " max-w-[85%] rounded-2xl px-3 py-2 text-sm md:max-w-[70%]";
+    bubble.className = (mine ? "bg-brand-600 text-white" : "border border-slate-200 bg-white text-slate-900") + " min-w-0 rounded-2xl px-3 py-2 text-sm";
 
     if (m.reply_to && !deleted) {
         const q = document.createElement("p");
@@ -84,10 +171,15 @@ function buildItem(m) {
     bubble.append(p);
 
     const meta = document.createElement("p");
-    meta.className = mine ? "mt-1 flex items-center justify-end gap-2 text-[11px] text-white/80" : "mt-1 text-[11px] text-slate-400";
+    meta.className = mine ? "mt-1 flex items-center justify-end gap-2 text-[11px] text-white/80" : "mt-1 flex items-center gap-2 text-[11px] text-slate-400";
     const time = document.createElement("span");
     time.textContent = formatTime(m.created_at);
     meta.append(time);
+    if (m.edited_at && !deleted) {
+        const ed = document.createElement("span");
+        ed.textContent = "diedit";
+        meta.append(ed);
+    }
     if (mine && !deleted) {
         const st = document.createElement("span");
         const tick = TICK[m.status];
@@ -111,16 +203,43 @@ function buildItem(m) {
         }
     }
     bubble.append(meta);
-    li.append(bubble);
+    row.append(bubble);
+
+    if (canAct(m)) {
+        const open = ui.activeUuid === m.client_uuid;
+        const more = document.createElement("button");
+        more.type = "button";
+        more.dataset.more = "1";
+        more.className = "shrink-0 rounded-full px-2 py-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600";
+        more.textContent = "⋯";
+        more.setAttribute("aria-label", "Aksi pesan");
+        more.setAttribute("aria-expanded", String(open));
+        more.addEventListener("click", () => {
+            ui.activeUuid = open ? null : m.client_uuid;
+            ui.focusUuid = m.client_uuid;
+            render();
+        });
+        row.append(more);
+    }
+    col.append(row);
+    if (!deleted && m.reactions?.length) col.append(buildReactions(m));
+    if (canAct(m) && ui.activeUuid === m.client_uuid) col.append(buildActions(m, mine));
+    li.append(col);
     return li;
 }
 
 function render({ bottom = false } = {}) {
     const sc = $("message-scroll");
     const nearBottom = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 80;
-    $("message-list").replaceChildren(...sorted().map(buildItem));
+    const list = $("message-list");
+    list.replaceChildren(...sorted().map(buildItem));
     setMsgState(byUuid.size === 0 ? "Belum ada pesan. Sapa duluan!" : "");
+    if (ui.focusUuid) {
+        [...list.children].find((li) => li.dataset.uuid === ui.focusUuid)?.querySelector("[data-more]")?.focus();
+        ui.focusUuid = null;
+    }
     if (bottom || nearBottom) sc.scrollTop = sc.scrollHeight;
+    updateComposeBar();
     scheduleRead();
 }
 
@@ -133,7 +252,7 @@ function paintHeader() {
 
 export function refreshPeerStatus() {
     if (!current) return;
-    $("peer-status").textContent = isOnline(current.peer.id) ? "Online" : lastSeenText(current.peer.last_seen_at);
+    $("peer-status").textContent = ui.peerTyping ? "sedang mengetik…" : isOnline(current.peer.id) ? "Online" : lastSeenText(current.peer.last_seen_at);
 }
 
 export function onPresence(userId, lastSeenAt) {
@@ -238,6 +357,7 @@ async function resync() {
 
 // ---------- membuka percakapan ----------
 async function openPeer(peer, conv = null) {
+    resetTransient();
     const tk = ++tokenSeq;
     current = { id: conv?.id ?? null, peer: { ...peer }, token: tk, hasMoreBefore: false, oldestId: null, serverTime: null, loadingOlder: false, readUpTo: 0 };
     byUuid.clear();
@@ -266,6 +386,7 @@ async function openPeer(peer, conv = null) {
 export const openWithUser = (user) => openPeer(user);
 
 function closeConversation() {
+    resetTransient();
     clearTimeout(readTimer);
     tokenSeq += 1;
     current = null;
@@ -301,12 +422,16 @@ export function openFromQuery() {
 }
 
 // ---------- kirim (optimistic UI, §H.7) ----------
-async function submit(text) {
+async function submit(text, replyTo = null) {
     const body = text.trim();
     if (!current?.id || !body || body.length > MAX_LEN) return;
     const m = {
         id: null, client_uuid: crypto.randomUUID(), conversation_id: current.id, sender_id: me(), recipient_id: current.peer.id,
-        body, reply_to: null, attachments: [], reactions: [], status: "sending", delivered_at: null, read_at: null,
+        body,
+        reply_to: replyTo
+            ? { id: replyTo.id, sender_id: replyTo.sender_id, body_preview: (replyTo.body ?? "").slice(0, 100), has_attachments: false, deleted: false }
+            : null,
+        attachments: [], reactions: [], status: "sending", delivered_at: null, read_at: null,
         edited_at: null, deleted_at: null, revision: 0, created_at: new Date().toISOString(),
     };
     byUuid.set(m.client_uuid, m);
@@ -317,7 +442,7 @@ async function submit(text) {
 async function post(m) {
     const tk = current?.token;
     try {
-        const saved = await sendMessage(m.conversation_id, { clientUuid: m.client_uuid, body: m.body });
+        const saved = await sendMessage(m.conversation_id, { clientUuid: m.client_uuid, body: m.body, replyToId: m.reply_to?.id });
         if (current?.token !== tk) return; // pindah percakapan; pesan sudah tersimpan di server
         upsert(saved); // ganti pesan optimistik (atau tidak berubah jika event message:new sudah lebih dulu)
     } catch {
@@ -326,6 +451,183 @@ async function post(m) {
         if (cur && cur.id == null) cur.status = "failed";
     }
     render();
+}
+
+// ---------- reply / edit lewat composer ----------
+function autosizeInput() {
+    const i = $("composer-input");
+    i.style.height = "auto";
+    i.style.height = `${Math.min(i.scrollHeight, 128)}px`;
+}
+
+function updateComposeBar() {
+    const c = ui.compose;
+    const bar = $("compose-context");
+    if (!c) {
+        bar.hidden = true;
+        return;
+    }
+    const t = byUuid.get(c.uuid);
+    if (!t || t.deleted_at != null) {
+        cancelCompose(c.mode === "edit"); // target hilang/terhapus
+        return;
+    }
+    bar.hidden = false;
+    $("compose-label").textContent = c.mode === "edit" ? "Mengedit pesan" : `Membalas ${t.sender_id === me() ? "diri sendiri" : (current?.peer.name ?? "")}`;
+    $("compose-preview").textContent = (t.body ?? "").slice(0, 100);
+}
+
+function cancelCompose(clearInput) {
+    ui.compose = null;
+    if (clearInput) {
+        $("composer-input").value = "";
+        autosizeInput();
+    }
+    updateComposeBar();
+}
+
+function startReply(uuid) {
+    if (ui.compose?.mode === "edit") cancelCompose(true);
+    ui.activeUuid = null;
+    ui.compose = { mode: "reply", uuid };
+    render();
+    $("composer-input").focus();
+}
+
+function startEdit(uuid) {
+    const m = byUuid.get(uuid);
+    if (!m || m.id == null || m.deleted_at != null) return;
+    ui.activeUuid = null;
+    ui.compose = { mode: "edit", uuid };
+    const i = $("composer-input");
+    i.value = m.body ?? "";
+    autosizeInput();
+    render();
+    i.focus();
+    i.setSelectionRange(i.value.length, i.value.length);
+}
+
+async function submitEdit(c, text) {
+    const m = byUuid.get(c.uuid);
+    const body = text.trim();
+    if (!m || !body || body.length > MAX_LEN) return;
+    if (body === m.body) {
+        cancelCompose(true);
+        return;
+    }
+    try {
+        upsert(await editMessage(m.id, body)); // §D.5: terapkan hanya jika revision >= lokal (upsert)
+        cancelCompose(true);
+    } catch (err) {
+        showActionError(err);
+        if (err.code === "EDIT_WINDOW_EXPIRED" || err.code === "MESSAGE_DELETED") cancelCompose(true);
+    }
+    render();
+}
+
+async function removeMessage(uuid) {
+    const m = byUuid.get(uuid);
+    if (!m || m.id == null || !window.confirm("Hapus pesan ini untuk semua orang?")) return;
+    ui.activeUuid = null;
+    try {
+        upsert(await deleteMessage(m.id)); // tombstone dari server (revision lebih tinggi)
+    } catch (err) {
+        showActionError(err);
+    }
+    render();
+}
+
+// ---------- reaksi ----------
+// §E.3: ganti SELURUH array reaksi bila revision >= nilai lokal
+function applyReaction({ message_id, revision, reactions }) {
+    for (const m of byUuid.values()) {
+        if (m.id === message_id) {
+            if (revision >= (m.revision ?? 0)) {
+                m.reactions = reactions;
+                m.revision = revision;
+            }
+            return;
+        }
+    }
+}
+
+async function toggleReaction(uuid, emoji) {
+    const m = byUuid.get(uuid);
+    if (!m || m.id == null || m.deleted_at != null) return;
+    if (!allowList().includes(emoji)) return; // emoji WAJIB persis dari window.AMIGO.reactionEmojis
+    ui.activeUuid = null;
+    try {
+        const res = mineReaction(m) === emoji ? await clearReaction(m.id) : await setReaction(m.id, emoji);
+        applyReaction({ ...res, message_id: m.id });
+    } catch (err) {
+        showActionError(err);
+    }
+    render();
+}
+
+// ---------- typing (§E.4, §H.3) ----------
+// ACK {ok:true} | {ok:false,error:{code}} diabaikan: typing hanya petunjuk UI, tidak disimpan
+function emitTyping(event, convId) {
+    sock?.emit(event, { conversation_id: convId }, (res) => {
+        if (res?.ok !== false) return;
+        const code = res.error?.code; // VALIDATION_ERROR | FORBIDDEN | RATE_LIMITED | UNAVAILABLE (CC-005 e)
+        if (code === "FORBIDDEN" || code === "VALIDATION_ERROR") typing.blockedConv = convId; // bukan peserta/payload salah: berhenti untuk percakapan ini
+        else if (code === "RATE_LIMITED") typing.pauseUntil = Date.now() + TYPING_BACKOFF_MS; // kurangi pengiriman sementara
+        // UNAVAILABLE: abaikan; typing hanya petunjuk UI
+    });
+}
+
+function onTypingInput() {
+    if (!current?.id || ui.compose?.mode === "edit" || typing.blockedConv === current.id) return;
+    if ($("composer-input").value.trim() === "") {
+        stopTyping();
+        return;
+    }
+    const now = Date.now();
+    if (typing.active && typing.convId !== current.id) stopTyping();
+    if (now >= typing.pauseUntil && (!typing.active || now - typing.lastSent >= TYPING_REPEAT_MS)) {
+        emitTyping(EV.TYPING_START, current.id);
+        typing.active = true;
+        typing.convId = current.id;
+        typing.lastSent = now;
+    }
+    clearTimeout(typing.stopTimer);
+    typing.stopTimer = setTimeout(stopTyping, TYPING_IDLE_MS);
+}
+
+function stopTyping() {
+    clearTimeout(typing.stopTimer);
+    if (typing.active) emitTyping(EV.TYPING_STOP, typing.convId);
+    typing.active = false;
+}
+
+function hidePeerTyping() {
+    clearTimeout(ui.peerTypingTimer);
+    if (ui.peerTyping) {
+        ui.peerTyping = false;
+        refreshPeerStatus();
+    }
+}
+
+function onTypingUpdate({ data }) {
+    if (!current || data.conversation_id !== current.id || data.user_id !== current.peer.id) return;
+    if (!data.is_typing) {
+        hidePeerTyping();
+        return;
+    }
+    ui.peerTyping = true;
+    refreshPeerStatus();
+    clearTimeout(ui.peerTypingTimer);
+    ui.peerTypingTimer = setTimeout(hidePeerTyping, TYPING_HIDE_MS); // §H.3: auto-sembunyi 5 dtk tanpa update
+}
+
+// berganti/menutup percakapan: typing:stop, buang menu aksi & mode reply/edit
+function resetTransient() {
+    stopTyping();
+    typing.blockedConv = null;
+    hidePeerTyping();
+    ui.activeUuid = null;
+    cancelCompose(ui.compose?.mode === "edit");
 }
 
 function retry(uuid) {
@@ -378,25 +680,36 @@ export function initConversation({ online, onActive: cb }) {
     onActive = cb ?? (() => {});
 
     const input = $("composer-input");
-    const autosize = () => {
-        input.style.height = "auto";
-        input.style.height = `${Math.min(input.scrollHeight, 128)}px`;
-    };
-    input.addEventListener("input", autosize);
+    input.addEventListener("input", () => {
+        autosizeInput();
+        onTypingInput();
+    });
     input.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
             e.preventDefault();
             $("composer").requestSubmit();
+        } else if (e.key === "Escape" && ui.compose) {
+            cancelCompose(ui.compose.mode === "edit");
         }
     });
     $("composer").addEventListener("submit", (e) => {
         e.preventDefault();
-        if (!current?.id || !input.value.trim()) return;
+        if (!current?.id) return;
         const v = input.value;
+        if (!v.trim()) return;
+        const c = ui.compose;
+        if (c?.mode === "edit") {
+            submitEdit(c, v);
+            return;
+        }
+        const replyTo = c?.mode === "reply" ? (byUuid.get(c.uuid) ?? null) : null;
         input.value = "";
-        autosize();
-        submit(v);
+        autosizeInput();
+        stopTyping(); // §H.3: typing:stop saat kirim pesan
+        cancelCompose(false);
+        submit(v, replyTo);
     });
+    $("compose-cancel").addEventListener("click", () => cancelCompose(ui.compose?.mode === "edit"));
     $("load-older").addEventListener("click", loadOlder);
     $("back-button").addEventListener("click", closeConversation);
     $("message-scroll").addEventListener("scroll", scheduleRead, { passive: true });
@@ -412,6 +725,7 @@ export function bindSocket(s) {
         const m = data.message;
         if (current && m.conversation_id === current.id) {
             upsert(m);
+            if (m.sender_id === current.peer.id) hidePeerTyping(); // pesan baru menggantikan indikator
             render();
         }
         if (m.recipient_id === me()) acked.add(m.id);
@@ -448,7 +762,41 @@ export function bindSocket(s) {
         if (changed) render();
     });
 
+    // §E.3: edit — ganti hanya jika revision >= nilai lokal (ditangani upsert)
+    sock.on(EV.MESSAGE_UPDATED, ({ data }) => {
+        if (data.message.conversation_id !== current?.id) return;
+        upsert(data.message);
+        render();
+    });
+
+    // §E.3: hapus -> tombstone "Pesan dihapus"
+    sock.on(EV.MESSAGE_DELETED, ({ data }) => {
+        if (data.conversation_id !== current?.id) return;
+        for (const m of byUuid.values()) {
+            if (m.id === data.message_id && data.revision >= (m.revision ?? 0)) {
+                Object.assign(m, { body: null, attachments: [], reactions: [], reply_to: null, deleted_at: data.deleted_at, revision: data.revision });
+            }
+            if (m.reply_to?.id === data.message_id) m.reply_to = { ...m.reply_to, body_preview: null, deleted: true };
+        }
+        render();
+    });
+
+    // §E.3: SELURUH daftar reaksi diganti bila revision >= nilai lokal (bukan ditambah)
+    sock.on(EV.MESSAGE_REACTION, ({ data }) => {
+        if (data.conversation_id !== current?.id) return;
+        applyReaction(data);
+        render();
+    });
+
+    sock.on(EV.TYPING_UPDATE, onTypingUpdate);
+
     sock.on(EV.SYNC_REQUIRED, () => resync());
+
+    sock.onLifecycle("disconnect", () => {
+        typing.active = false;
+        clearTimeout(typing.stopTimer);
+        hidePeerTyping();
+    });
 
     sock.onLifecycle("connect", () => {
         if (connectedBefore) resync();
