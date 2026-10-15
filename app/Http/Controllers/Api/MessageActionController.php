@@ -103,7 +103,7 @@ class MessageActionController extends Controller
 
         return Message::withTrashed()
             ->whereHas('conversation', fn ($q) => $q->forUser($me))
-            ->with(['replyTo', 'reactions'])
+            ->with(['replyTo.attachments', 'reactions', 'attachments'])
             ->findOrFail($id);
     }
 }
