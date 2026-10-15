@@ -5,8 +5,9 @@
 //            sync:required saat Redis tersambung kembali.
 //   Fase 3 : meneruskan message:read dan unread:update dari Redis ke room tujuan.
 //   Fase 4 : meneruskan notification:new (+ACK, hanya dicatat) dan notification:read.
+//   Fase 5 : meneruskan message:updated/deleted/reaction; typing:start/stop -> typing:update.
 // Kontrak: AMIGO_TECHNICAL_CONTRACT.md §E, §H, §D.9, §J.
-// Akan menyusul: typing & edit/hapus/reaksi (Fase 5).
+// Akan menyusul: media (Fase 6, lewat REST) dan penguatan (Fase 7).
 
 const path = require('node:path');
 const http = require('node:http');
@@ -34,6 +35,9 @@ const LARAVEL_URL = process.env.LARAVEL_INTERNAL_URL || 'http://127.0.0.1:8000';
 const LARAVEL_HOST_HEADER = process.env.LARAVEL_INTERNAL_HOST || '';
 const PRESENCE_GRACE_MS = Number(process.env.PRESENCE_GRACE_MS || 5000);
 const ACK_TIMEOUT_MS = Number(process.env.ACK_TIMEOUT_MS || 5000);
+const TYPING_EXPIRE_MS = Number(process.env.TYPING_EXPIRE_MS || 5000); // kontrak §H.3
+const TYPING_MIN_INTERVAL_MS = 2000; // maks 1 typing:start / 2 dtk / socket (kontrak §E.4)
+const PARTICIPANTS_TTL_MS = 60000; // cache peserta percakapan (kontrak §D.9)
 
 const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
 const REDIS_PORT = Number(process.env.REDIS_PORT || 6379);
@@ -47,6 +51,9 @@ const NOTIFICATION_CHANNEL = process.env.REDIS_NOTIFICATION_CHANNEL || 'chat.not
 // Event yang BOLEH datang dari Redis (daftar putih). Bertambah di fase berikutnya.
 const ALLOWED_REDIS_EVENTS = new Set([
   'message:new',
+  'message:updated',
+  'message:deleted',
+  'message:reaction',
   'message:read',
   'unread:update',
   'notification:new',
@@ -76,12 +83,13 @@ const isPositiveInt = (n) => Number.isInteger(n) && n > 0;
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 
 /**
- * POST JSON ke endpoint internal Laravel dengan tanda tangan HMAC (kontrak §D.9).
- * Mengembalikan { status, body }. Melempar error bila jaringan gagal.
+ * Memanggil endpoint internal Laravel dengan tanda tangan HMAC (kontrak §D.9):
+ *   X-Internal-Signature = hex(HMAC-SHA256(INTERNAL_API_SECRET, timestamp + "." + rawBody))
+ * Untuk GET, rawBody kosong. Mengembalikan { status, body }. Melempar error bila jaringan gagal.
  */
-function postInternal(urlPath, payload) {
+function requestInternal(method, urlPath, payload) {
   return new Promise((resolve, reject) => {
-    const raw = JSON.stringify(payload);
+    const raw = payload === null || payload === undefined ? '' : JSON.stringify(payload);
     const timestamp = String(Math.floor(Date.now() / 1000));
     const signature = crypto
       .createHmac('sha256', INTERNAL_SECRET)
@@ -92,35 +100,40 @@ function postInternal(urlPath, payload) {
     const client = target.protocol === 'https:' ? https : http;
 
     const headers = {
-      'Content-Type': 'application/json',
-      'Content-Length': Buffer.byteLength(raw),
       Accept: 'application/json',
       'X-Internal-Timestamp': timestamp,
       'X-Internal-Signature': signature,
     };
+    if (raw !== '') {
+      headers['Content-Type'] = 'application/json';
+      headers['Content-Length'] = Buffer.byteLength(raw);
+    }
     if (LARAVEL_HOST_HEADER) headers.Host = LARAVEL_HOST_HEADER;
 
-    const req = client.request(target, { method: 'POST', headers, timeout: Number(process.env.INTERNAL_TIMEOUT_MS || 15000) }, (res) => {
-      let body = '';
-      res.on('data', (c) => (body += c));
-      res.on('end', () => resolve({ status: res.statusCode, body }));
-    });
+    const req = client.request(
+      target,
+      { method, headers, timeout: Number(process.env.INTERNAL_TIMEOUT_MS || 15000) },
+      (res) => {
+        let body = '';
+        res.on('data', (c) => (body += c));
+        res.on('end', () => resolve({ status: res.statusCode, body }));
+      },
+    );
     req.on('timeout', () => req.destroy(new Error('timeout')));
     req.on('error', reject);
-    req.write(raw);
+    if (raw !== '') req.write(raw);
     req.end();
   });
 }
 
 /**
- * Retry 3x (0,5 / 1 / 2 detik). Status 4xx dianggap permanen (tidak diulang).
+ * Retry (default 3x: 0,5 / 1 / 2 detik). Status 4xx dianggap permanen (tidak diulang).
  * Mengembalikan JSON hasil (object) bila sukses, atau null bila gagal.
  */
-async function callInternal(urlPath, payload) {
-  const delays = [500, 1000, 2000];
+async function callInternal(urlPath, payload, { method = 'POST', delays = [500, 1000, 2000] } = {}) {
   for (let attempt = 0; attempt <= delays.length; attempt++) {
     try {
-      const res = await postInternal(urlPath, payload);
+      const res = await requestInternal(method, urlPath, payload);
       if (res.status >= 200 && res.status < 300) {
         try {
           return JSON.parse(res.body);
@@ -329,6 +342,115 @@ subscriber.psubscribe(`*${CHAT_CHANNEL}`, `*${NOTIFICATION_CHANNEL}`, (err) => {
 });
 subscriber.on('pmessage', (_pattern, _channel, message) => handleRedisMessage(message));
 
+// ---------- Typing indicator (kontrak §E.4, §H.3) ----------
+/** conversationId -> { ids: [userA, userB], expires } */
+const participantsCache = new Map();
+/** `${userId}:${conversationId}` -> { timer, socketId, peerId, userId, conversationId } */
+const typingStates = new Map();
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, entry] of participantsCache) if (entry.expires <= now) participantsCache.delete(id);
+}, 5 * 60 * 1000).unref();
+
+/** Peserta percakapan, divalidasi Laravel (Node tidak mempercayai client). null bila tidak bisa diverifikasi. */
+async function getParticipants(conversationId) {
+  const cached = participantsCache.get(conversationId);
+  if (cached && cached.expires > Date.now()) return cached.ids;
+
+  const result = await callInternal(`/internal/v1/conversations/${conversationId}/participants`, null, {
+    method: 'GET',
+    delays: [300],
+  });
+  const ids = result && result.data && result.data.user_ids;
+  if (!Array.isArray(ids) || ids.length !== 2 || !ids.every(isPositiveInt)) return null;
+
+  participantsCache.set(conversationId, { ids, expires: Date.now() + PARTICIPANTS_TTL_MS });
+  return ids;
+}
+
+function emitTyping(state, isTyping) {
+  io.to(`user:${state.peerId}`).emit(
+    'typing:update',
+    envelope({ conversation_id: state.conversationId, user_id: state.userId, is_typing: isTyping }),
+  );
+}
+
+function startTyping(socket, userId, conversationId, peerId) {
+  const key = `${userId}:${conversationId}`;
+  const previous = typingStates.get(key);
+  if (previous) clearTimeout(previous.timer);
+
+  const state = { userId, conversationId, peerId, socketId: socket.id, timer: null };
+  state.timer = setTimeout(() => {
+    typingStates.delete(key);
+    emitTyping(state, false); // kedaluwarsa: tidak ada typing:start baru
+  }, TYPING_EXPIRE_MS);
+  typingStates.set(key, state);
+
+  // Setiap typing:start yang diterima diteruskan agar timer 5 detik di penerima ikut diperbarui
+  emitTyping(state, true);
+}
+
+function stopTyping(userId, conversationId) {
+  const key = `${userId}:${conversationId}`;
+  const state = typingStates.get(key);
+  if (!state) return;
+  clearTimeout(state.timer);
+  typingStates.delete(key);
+  emitTyping(state, false);
+}
+
+function stopTypingForSocket(socketId) {
+  for (const [key, state] of typingStates) {
+    if (state.socketId === socketId) {
+      clearTimeout(state.timer);
+      typingStates.delete(key);
+      emitTyping(state, false);
+    }
+  }
+}
+
+async function handleTyping(socket, kind, payload, ack) {
+  const reply = typeof ack === 'function' ? ack : () => {};
+  const conversationId = payload && payload.conversation_id;
+
+  if (!isPositiveInt(conversationId)) {
+    return reply({ ok: false, error: { code: 'VALIDATION_ERROR', message: 'conversation_id tidak valid' } });
+  }
+
+  // Batas keseluruhan 120 event typing / menit / socket (kontrak §I no. 9)
+  const now = Date.now();
+  const window = (socket.data.typingWindow = socket.data.typingWindow || []);
+  while (window.length && now - window[0] > 60000) window.shift();
+  if (window.length >= 120) {
+    return reply({ ok: false, error: { code: 'RATE_LIMITED', message: 'Terlalu banyak permintaan' } });
+  }
+  window.push(now);
+
+  // typing:start berlebih (< 2 detik dari yang terakhir) diabaikan, bukan error
+  if (kind === 'start' && now - (socket.data.lastTypingStart || 0) < TYPING_MIN_INTERVAL_MS) {
+    return reply({ ok: true });
+  }
+
+  const userId = socket.data.userId;
+  const ids = await getParticipants(conversationId);
+  if (!ids) {
+    return reply({ ok: false, error: { code: 'UNAVAILABLE', message: 'Percakapan tidak dapat diverifikasi' } });
+  }
+  if (!ids.includes(userId)) {
+    return reply({ ok: false, error: { code: 'FORBIDDEN', message: 'Bukan peserta percakapan' } });
+  }
+
+  if (kind === 'start') {
+    socket.data.lastTypingStart = Date.now();
+    startTyping(socket, userId, conversationId, ids.find((id) => id !== userId));
+  } else {
+    stopTyping(userId, conversationId);
+  }
+  return reply({ ok: true });
+}
+
 // ---------- Koneksi socket ----------
 io.on('connection', (socket) => {
   const userId = socket.data.userId;
@@ -382,7 +504,13 @@ io.on('connection', (socket) => {
     return reply({ ok: true });
   });
 
+  // ---- typing:start / typing:stop (client -> server), kontrak §E.4 ----
+  socket.on('typing:start', (payload, ack) => handleTyping(socket, 'start', payload, ack));
+  socket.on('typing:stop', (payload, ack) => handleTyping(socket, 'stop', payload, ack));
+
   socket.on('disconnect', () => {
+    stopTypingForSocket(socket.id); // typing berhenti otomatis saat socket pengirim putus (kontrak §H.3)
+
     const set = socketsByUser.get(userId);
     if (set) {
       set.delete(socket.id);

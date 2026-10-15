@@ -1,6 +1,6 @@
 # AMIGO — TECHNICAL CONTRACT
 
-**Contract version:** `0.2.3` · **Status:** siap dipakai Backend + Frontend (semua keputusan terbuka sudah diberi nilai default di §14) · **Bahasa dokumen:** Indonesia, nama teknis tetap Inggris
+**Contract version:** `0.2.4` · **Status:** siap dipakai Backend + Frontend (semua keputusan terbuka sudah diberi nilai default di §14) · **Bahasa dokumen:** Indonesia, nama teknis tetap Inggris
 
 > Dokumen ini adalah **satu-satunya sumber acuan** untuk AI Backend dan AI Frontend.
 > Jika kode dan dokumen bertentangan, **jangan memperbaiki diam-diam di satu sisi** — ikuti prosedur di §0.3.
@@ -878,6 +878,7 @@ Socket.IO **Connection State Recovery tidak diandalkan** (tidak ada jaminan lint
 | CC-002 | 2026-10-14 | `0.2.1` (Fase 2): (a) `conversations.last_message_id` tanpa FK database karena referensi melingkar dengan `messages`; (b) pada Fase 2 `POST …/messages` hanya menerima teks — `body` wajib dan `attachment_ids` ditolak `422` sampai Fase 6; (c) efek samping `notifications` dan event `unread:update` pada `POST …/messages` ditunda ke Fase 3/4; (d) `unread_count` pada Conversation sudah dihitung lewat query; (e) tidak ada perubahan nama field/event/endpoint | Backend (beri tahu Frontend) |
 | CC-003 | 2026-10-14 | `0.2.2` (Fase 3): (a) `POST …/read` mengembalikan `read_at: null` bila `read_count` = 0 (panggilan ulang), dan tidak memublikasikan event apa pun; (b) `GET /unread-counts` → `by_conversation` hanya memuat percakapan dengan `unread_count` > 0; (c) `unread:update` kini juga dikirim ke penerima setiap ada pesan baru (melengkapi CC-002 butir c); (d) pembaruan otomatis `notifications` saat pesan dibaca menyusul di Fase 4 bersama tabel notifikasi; (e) tidak ada perubahan nama field/event/endpoint | Backend (beri tahu Frontend) |
 | CC-004 | 2026-10-15 | `0.2.3` (Fase 4): (a) satu notifikasi `chat.message` dibuat per pesan baru untuk penerima, dalam transaksi yang sama dengan pesan; `body` = 100 karakter pertama teks; (b) notifikasi terkait otomatis `read_at` saat pesannya dibaca via `POST …/read`, lalu `notification:read` dikirim ke semua tab pembaca; (c) `notification:new` dipublish ke channel `chat.notifications` dan ACK-nya hanya dicatat Node (tanpa event ke user lain, sesuai §E.3); (d) `POST /notifications/read-all` hanya menandai notifikasi, bukan pesan; (e) id notifikasi harus UUID — selain itu `404`; (f) tidak ada perubahan nama field/event/endpoint | Backend (beri tahu Frontend) |
+| CC-005 | 2026-10-16 | `0.2.4` (Fase 5): (a) urutan pemeriksaan aksi pesan: bukan peserta `404` → bukan pengirim `403` → pesan terhapus `409 MESSAGE_DELETED` → lewat batas edit `409 EDIT_WINDOW_EXPIRED` → input `422`; (b) edit dengan teks sama → `200` tanpa event dan tanpa kenaikan `revision`; (c) hapus: reaksi pesan itu dihapus, `unread:update` dikirim ke penerima, notifikasi terkait TIDAK diubah (sesuai §C.9); (d) reaksi: emoji harus persis sama dengan allow-list (termasuk ❤️ yang memuat U+FE0F), `message:reaction` selalu membawa SELURUH daftar `reactions`, reaksi/hapus-reaksi yang tidak mengubah apa pun tidak menaikkan `revision` dan tidak mengirim event; `DELETE …/reaction` pada pesan terhapus tetap `200`; (e) typing: setiap `typing:start` yang diterima (maks 1 / 2 dtk / socket) diteruskan sebagai `typing:update` `is_typing:true` ke lawan bicara saja; `is_typing:false` dikirim saat `typing:stop`, 5 dtk tanpa `typing:start`, atau socket pengirim putus; kode error ACK: `VALIDATION_ERROR`, `FORBIDDEN`, `RATE_LIMITED`, `UNAVAILABLE`; (f) `GET /internal/v1/conversations/{id}/participants` menandatangani body kosong; (g) tidak ada perubahan nama field/event/endpoint | Backend (beri tahu Frontend) |
 
 ## 15. Status Implementasi (diperbarui Backend tiap fase)
 
@@ -889,8 +890,8 @@ Socket.IO **Connection State Recovery tidak diandalkan** (tidak ada jaminan lint
 | §D.4 `GET/POST /api/v1/conversations`, `GET …/{id}/messages` (riwayat `before_id`, resync `updated_since`) | ✅ Fase 2 |
 | §D.5 `POST /api/v1/conversations/{id}/messages` (teks, reply, idempoten `client_uuid`) | ✅ Fase 2 |
 | §E `message:new` (+ACK), `message:delivery`, `message:delivered` (client→server), `sync:required` | ✅ Fase 2 |
-| §D.9 `/internal/v1/presence`, `/internal/v1/messages/delivered` | ✅ (internal, bukan untuk Frontend) |
+| §D.9 `/internal/v1/presence`, `/internal/v1/messages/delivered`, `/internal/v1/conversations/{id}/participants` | ✅ (internal, bukan untuk Frontend) |
 | §D.7 `POST /api/v1/conversations/{id}/read`, `GET /api/v1/unread-counts`; §E `message:read`, `unread:update` (juga dikirim saat ada pesan baru) | ✅ Fase 3 |
 | §D.8 `GET /api/v1/notifications`, `POST …/{id}/read`, `POST …/read-all`; §E `notification:new` (+ACK), `notification:read` | ✅ Fase 4 |
-| §D.5 edit/hapus/reaksi, `message:updated|deleted|reaction`, typing | ⏳ Fase 5 |
+| §D.5 `PATCH /api/v1/messages/{id}`, `DELETE /api/v1/messages/{id}`, `PUT/DELETE /api/v1/messages/{id}/reaction`; §E `message:updated`, `message:deleted`, `message:reaction`, `typing:start/stop` (client→server), `typing:update` | ✅ Fase 5 |
 | §D.6, §G lampiran | ⏳ Fase 6 |
