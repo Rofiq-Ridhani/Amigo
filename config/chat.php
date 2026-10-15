@@ -22,6 +22,11 @@ return [
     // false = jangan publish ke Redis (dipakai di tes)
     'realtime_enabled' => (bool) env('CHAT_REALTIME_ENABLED', true),
 
+    // Lampiran (kontrak §G): disk PRIVAT, bukan public
+    'media_disk' => env('CHAT_MEDIA_DISK', 'local'),
+    // Lampiran yang diunggah tetapi tidak pernah dikirim dihapus setelah sekian jam
+    'orphan_ttl_hours' => (int) env('CHAT_ORPHAN_TTL_HOURS', 24),
+
     'message_max_length' => (int) env('CHAT_MESSAGE_MAX_LENGTH', 2000),
     'edit_window_minutes' => (int) env('CHAT_EDIT_WINDOW_MINUTES', 15),
 

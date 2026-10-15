@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Attachment;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\User;
@@ -27,8 +28,14 @@ class MessageService
      *
      * @return array{0:Message,1:bool} [pesan, apakah baru dibuat]
      */
-    public function send(Conversation $conversation, User $sender, string $clientUuid, string $body, ?int $replyToId = null): array
-    {
+    public function send(
+        Conversation $conversation,
+        User $sender,
+        string $clientUuid,
+        ?string $body,
+        ?int $replyToId = null,
+        array $attachmentIds = [],
+    ): array {
         $existing = $this->findExisting($sender, $clientUuid, $conversation);
 
         if ($existing !== null) {
@@ -36,9 +43,14 @@ class MessageService
         }
 
         $recipientId = $conversation->peerIdFor($sender->id);
+        $attachmentIds = array_values(array_unique(array_map('intval', $attachmentIds)));
+
+        // Diperiksa SETELAH pengecekan idempotensi: kirim ulang dengan client_uuid yang sama
+        // (lampiran sudah terpakai oleh pesan itu) tetap harus berhasil.
+        $this->assertAttachmentsUsable($sender, $attachmentIds);
 
         try {
-            [$message, $notification] = DB::transaction(function () use ($conversation, $sender, $recipientId, $clientUuid, $body, $replyToId) {
+            [$message, $notification] = DB::transaction(function () use ($conversation, $sender, $recipientId, $clientUuid, $body, $replyToId, $attachmentIds) {
                 $message = Message::create([
                     'conversation_id' => $conversation->id,
                     'sender_id' => $sender->id,
@@ -48,6 +60,18 @@ class MessageService
                     'body' => $body,
                     'revision' => 1,
                 ]);
+
+                if ($attachmentIds !== []) {
+                    $attached = Attachment::whereIn('id', $attachmentIds)
+                        ->where('uploader_id', $sender->id)
+                        ->whereNull('message_id')
+                        ->update(['message_id' => $message->id]);
+
+                    // Lampiran dipakai pesan lain di saat bersamaan -> batalkan seluruh transaksi
+                    if ($attached !== count($attachmentIds)) {
+                        throw $this->attachmentsInvalid();
+                    }
+                }
 
                 $conversation->forceFill([
                     'last_message_id' => $message->id,
@@ -64,7 +88,7 @@ class MessageService
             return [$this->findExisting($sender, $clientUuid, $conversation, true), false];
         }
 
-        $message->load('replyTo');
+        $message->load(['replyTo.attachments', 'attachments']);
 
         // Setelah commit (kontrak §5 alur pesan, langkah 4)
         $this->realtime->publish(
@@ -88,6 +112,30 @@ class MessageService
         return [$message, true];
     }
 
+    /** @param  array<int,int>  $attachmentIds */
+    private function assertAttachmentsUsable(User $sender, array $attachmentIds): void
+    {
+        if ($attachmentIds === []) {
+            return;
+        }
+
+        $usable = Attachment::whereIn('id', $attachmentIds)
+            ->where('uploader_id', $sender->id)
+            ->whereNull('message_id')
+            ->count();
+
+        if ($usable !== count($attachmentIds)) {
+            throw $this->attachmentsInvalid();
+        }
+    }
+
+    private function attachmentsInvalid(): ValidationException
+    {
+        return ValidationException::withMessages([
+            'attachment_ids' => 'Lampiran tidak valid, bukan milik Anda, atau sudah dipakai pesan lain.',
+        ]);
+    }
+
     private function findExisting(User $sender, string $clientUuid, Conversation $conversation, bool $required = false): ?Message
     {
         $query = Message::withTrashed()
@@ -106,6 +154,6 @@ class MessageService
             ]);
         }
 
-        return $existing->loadMissing('replyTo');
+        return $existing->loadMissing(['replyTo.attachments', 'attachments']);
     }
 }

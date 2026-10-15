@@ -25,7 +25,7 @@ class ConversationController extends Controller
 
         $paginator = Conversation::forUser($me)
             ->whereNotNull('last_message_id') // hanya percakapan yang sudah punya pesan
-            ->with(['userOne', 'userTwo', 'lastMessage'])
+            ->with(['userOne', 'userTwo', 'lastMessage.attachments', 'lastMessage.reactions', 'lastMessage.replyTo.attachments'])
             ->orderByDesc('last_message_at')
             ->orderByDesc('id')
             ->paginate($perPage);
@@ -66,7 +66,7 @@ class ConversationController extends Controller
         $conversation = Conversation::between($me->id, (int) $data['user_id']);
         $created = $conversation->wasRecentlyCreated;
 
-        $conversation->load(['userOne', 'userTwo', 'lastMessage']);
+        $conversation->load(['userOne', 'userTwo', 'lastMessage.attachments', 'lastMessage.reactions', 'lastMessage.replyTo.attachments']);
 
         $unread = Message::where('conversation_id', $conversation->id)
             ->where('recipient_id', $me->id)
