@@ -33,7 +33,7 @@ class MessageController extends Controller
 
         $base = Message::withTrashed()
             ->where('conversation_id', $conversation->id)
-            ->with('replyTo');
+            ->with(['replyTo', 'reactions']);
 
         $hasMoreBefore = false;
         $hasMore = false;
