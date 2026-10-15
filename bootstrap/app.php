@@ -1,7 +1,6 @@
 <?php
 
-// file: bootstrap/app.php
-
+use App\Http\Middleware\SecurityHeaders;
 use App\Http\Middleware\VerifyInternalSignature;
 use App\Support\ApiExceptionRenderer;
 use Illuminate\Foundation\Application;
@@ -23,8 +22,9 @@ return Application::configure(basePath: dirname(__DIR__))
                 ->group(base_path('routes/internal.php'));
         },
     )
-    ->withMiddleware(function (Middleware $middleware): void {
-        //
+   ->withMiddleware(function (Middleware $middleware): void {
+        // Header keamanan + CSP untuk SEMUA respons, termasuk 401/404/419/429 (kontrak §I no. 8)
+        $middleware->append(SecurityHeaders::class);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(

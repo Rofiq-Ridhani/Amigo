@@ -119,6 +119,29 @@ const rejected = (socket) =>
   check('A menerima presence:update offline untuk B', off?.env.data.user_id === 2);
   check('offline membawa last_seen_at (ISO UTC)', /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(off?.env.data.last_seen_at || ''));
 
+  console.log('\n[6] Penguatan (Fase 7)');
+  const MAX = Number(process.env.SOCKET_MAX_PER_USER || 10);
+  const crowd = [];
+  for (let i = 0; i < MAX; i++) crowd.push(connect(token(77)));
+  await sleep(600);
+  check(`${MAX} koneksi per akun diizinkan`, crowd.every((s) => s.connected), `terhubung: ${crowd.filter((s) => s.connected).length}`);
+  const extra = connect(token(77));
+  r = await rejected(extra);
+  check('koneksi ke-' + (MAX + 1) + ' untuk akun yang sama ditolak (too_many_connections)', r.ok && r.message === 'too_many_connections', JSON.stringify(r));
+  crowd.forEach((s) => s.close());
+
+  const big = connect(token(78));
+  await waitFor(big, (e) => e.name === 'presence:snapshot');
+  let dropped = false;
+  big.on('disconnect', () => (dropped = true));
+  big.emit('typing:start', { conversation_id: 1, pad: 'x'.repeat(200000) });
+  await sleep(1500);
+  check('payload melebihi 64 KB memutus koneksi pengirim', dropped);
+  const sane = connect(token(79));
+  const snap = await waitFor(sane, (e) => e.name === 'presence:snapshot');
+  check('server tetap melayani koneksi baru setelah payload berlebih', !!snap);
+  sane.close();
+
   a.close();
   console.log(failed === 0 ? '\nSEMUA LULUS' : `\n${failed} TES GAGAL`);
   process.exit(failed === 0 ? 0 : 1);

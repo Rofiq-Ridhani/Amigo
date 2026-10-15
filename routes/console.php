@@ -10,3 +10,6 @@ Artisan::command('inspire', function () {
 
 // Bersihkan lampiran yatim tiap jam (jalankan `php artisan schedule:work` saat development)
 Schedule::command('attachments:prune')->hourly();
+
+// Kirim ulang event realtime yang gagal dipublish ke Redis (kontrak §J)
+Schedule::command('outbox:flush')->everyMinute()->withoutOverlapping();

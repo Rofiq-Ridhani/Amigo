@@ -158,12 +158,14 @@ class AttachmentController extends Controller
         $response = response()->file($disk->path($attachment->path), [
             'Content-Type' => $attachment->mime_type,
             'X-Content-Type-Options' => 'nosniff',
+            // Konten unggahan pengguna: tanpa skrip, tanpa sub-resource, terisolasi (defense in depth)
+            'Content-Security-Policy' => "default-src 'none'; sandbox",
         ]);
 
         // BinaryFileResponse secara bawaan bersifat `public`; file ini PRIVAT (hanya untuk peserta),
         // jadi tidak boleh disimpan oleh cache bersama (proxy/CDN). Hanya cache browser pengguna.
         $response->setPrivate();
-        $response->setMaxAge(3600);;
+        $response->setMaxAge(3600);
 
         $response->setContentDisposition(
             $inline ? ResponseHeaderBag::DISPOSITION_INLINE : ResponseHeaderBag::DISPOSITION_ATTACHMENT,
