@@ -27,6 +27,22 @@ return [
     // Lampiran yang diunggah tetapi tidak pernah dikirim dihapus setelah sekian jam
     'orphan_ttl_hours' => (int) env('CHAT_ORPHAN_TTL_HOURS', 24),
 
+    // Outbox (kontrak §J): event yang gagal dipublish ke Redis dicoba lagi oleh `outbox:flush`;
+    // yang lebih tua dari ini dibuang (client pulih lewat resync, kontrak §H.6).
+    'outbox_max_age_minutes' => (int) env('CHAT_OUTBOX_MAX_AGE_MINUTES', 30),
+
+    // Batas waktu koneksi/baca Redis (detik) agar request tidak menggantung bila Redis bermasalah
+    'redis_timeout' => (float) env('REDIS_TIMEOUT', 1.5),
+
+    // Content-Security-Policy: off | report-only (default, tidak memblokir) | enforce
+    'csp' => [
+        'mode' => env('CHAT_CSP_MODE', 'report-only'),
+        'vite_dev_url' => env('CHAT_CSP_VITE_URL', 'http://localhost:5173'), // hanya dipakai saat APP_ENV=local
+    ],
+
+    // Health check server Socket.IO untuk `php artisan amigo:doctor`
+    'socket_health_url' => env('SOCKET_HEALTH_URL'),
+
     'message_max_length' => (int) env('CHAT_MESSAGE_MAX_LENGTH', 2000),
     'edit_window_minutes' => (int) env('CHAT_EDIT_WINDOW_MINUTES', 15),
 
