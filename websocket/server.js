@@ -6,8 +6,8 @@
 //   Fase 3 : meneruskan message:read dan unread:update dari Redis ke room tujuan.
 //   Fase 4 : meneruskan notification:new (+ACK, hanya dicatat) dan notification:read.
 //   Fase 5 : meneruskan message:updated/deleted/reaction; typing:start/stop -> typing:update.
+//   Fase 7 : penguatan — batas koneksi per user, ukuran payload, penanganan error tak terduga.
 // Kontrak: AMIGO_TECHNICAL_CONTRACT.md §E, §H, §D.9, §J.
-// Akan menyusul: media (Fase 6, lewat REST) dan penguatan (Fase 7).
 
 const path = require('node:path');
 const http = require('node:http');
@@ -36,6 +36,8 @@ const LARAVEL_HOST_HEADER = process.env.LARAVEL_INTERNAL_HOST || '';
 const PRESENCE_GRACE_MS = Number(process.env.PRESENCE_GRACE_MS || 5000);
 const ACK_TIMEOUT_MS = Number(process.env.ACK_TIMEOUT_MS || 5000);
 const TYPING_EXPIRE_MS = Number(process.env.TYPING_EXPIRE_MS || 5000); // kontrak §H.3
+const MAX_SOCKETS_PER_USER = Number(process.env.SOCKET_MAX_PER_USER || 10); // mencegah satu akun menghabiskan koneksi
+const MAX_PAYLOAD_BYTES = Number(process.env.SOCKET_MAX_PAYLOAD_BYTES || 64 * 1024); // payload event kecil; 64 KB sudah longgar
 const TYPING_MIN_INTERVAL_MS = 2000; // maks 1 typing:start / 2 dtk / socket (kontrak §E.4)
 const PARTICIPANTS_TTL_MS = 60000; // cache peserta percakapan (kontrak §D.9)
 
@@ -169,6 +171,8 @@ const httpServer = http.createServer((req, res) => {
 
 const io = new Server(httpServer, {
   cors: { origin: ALLOWED_ORIGINS, methods: ['GET', 'POST'] },
+  maxHttpBufferSize: MAX_PAYLOAD_BYTES, // pesan lebih besar -> koneksi diputus
+  connectTimeout: 10000, // klien harus menyelesaikan handshake/autentikasi dalam 10 detik
   // Kontrak §E.1 no. 4: Origin harus ada di SOCKET_ALLOWED_ORIGINS
   allowRequest: (req, callback) => {
     const origin = req.headers.origin;
@@ -186,6 +190,10 @@ io.use((socket, next) => {
 
     const userId = Number(payload.sub);
     if (!isPositiveInt(userId)) return next(new Error('unauthorized'));
+
+    // Batas jumlah koneksi per akun (kontrak §I): tab yang wajar jauh di bawah batas ini
+    const existing = socketsByUser.get(userId);
+    if (existing && existing.size >= MAX_SOCKETS_PER_USER) return next(new Error('too_many_connections'));
 
     // Identitas HANYA dari token. Payload apa pun dari client tidak dipercaya.
     socket.data.userId = userId;
@@ -279,7 +287,7 @@ function dispatchEnvelope(env) {
           }
           if (env.event === 'message:new') {
             const messageId = env.data.message && env.data.message.id;
-            if (isPositiveInt(messageId)) markDelivered(userId, [messageId]);
+            if (isPositiveInt(messageId)) markDelivered(userId, [messageId]).catch((e) => log(`markDelivered error: ${e.message}`));
           } else if (env.event === 'notification:new') {
             // ACK notifikasi hanya dicatat (kontrak §E.3): tidak ada event ke user lain
             const notificationId = env.data.notification && env.data.notification.id;
@@ -500,13 +508,18 @@ io.on('connection', (socket) => {
     deliveredCalls.push(now);
 
     // user_id HANYA dari token; Laravel memfilter pesan yang bukan milik user ini
-    markDelivered(userId, ids);
+    markDelivered(userId, ids).catch((e) => log(`markDelivered error: ${e.message}`));
     return reply({ ok: true });
   });
 
   // ---- typing:start / typing:stop (client -> server), kontrak §E.4 ----
-  socket.on('typing:start', (payload, ack) => handleTyping(socket, 'start', payload, ack));
-  socket.on('typing:stop', (payload, ack) => handleTyping(socket, 'stop', payload, ack));
+  const typingSafe = (kind) => (payload, ack) =>
+    handleTyping(socket, kind, payload, ack).catch((e) => {
+      log(`typing error: ${e.message}`);
+      if (typeof ack === 'function') ack({ ok: false, error: { code: 'SERVER_ERROR', message: 'Terjadi kesalahan' } });
+    });
+  socket.on('typing:start', typingSafe('start'));
+  socket.on('typing:stop', typingSafe('stop'));
 
   socket.on('disconnect', () => {
     stopTypingForSocket(socket.id); // typing berhenti otomatis saat socket pengirim putus (kontrak §H.3)
@@ -533,7 +546,9 @@ io.on('connection', (socket) => {
       log(`offline user=${userId}`);
 
       // Simpan last_seen_at di database lewat Laravel (kontrak §D.9)
-      callInternal('/internal/v1/presence', { user_id: userId, status: 'offline', at: lastSeenAt });
+      callInternal('/internal/v1/presence', { user_id: userId, status: 'offline', at: lastSeenAt }).catch((e) =>
+        log(`presence error: ${e.message}`),
+      );
     }, PRESENCE_GRACE_MS);
 
     offlineTimers.set(userId, timer);
@@ -554,3 +569,10 @@ function shutdown() {
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+
+// Kegagalan tak terduga pada satu event tidak boleh mematikan seluruh server (dan presence semua user)
+process.on('unhandledRejection', (reason) => log(`unhandledRejection: ${reason && reason.message ? reason.message : reason}`));
+process.on('uncaughtException', (err) => {
+  log(`uncaughtException: ${err.stack || err.message}`);
+  shutdown(); // keadaan tidak pasti: berhenti rapi, biarkan proses manager menyalakan ulang
+});

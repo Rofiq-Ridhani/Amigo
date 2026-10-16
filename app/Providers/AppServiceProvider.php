@@ -27,5 +27,18 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('login', function (Request $request) {
             return Limit::perMinute(5)->by(Str::lower((string) $request->input('email')).'|'.$request->ip());
         });
+
+        // Registrasi: 10 / menit per IP (mencegah pembuatan akun massal)
+        RateLimiter::for('register', function (Request $request) {
+            return Limit::perMinute(10)->by((string) $request->ip());
+        });
+
+        // Redis tidak boleh membuat request menggantung bila server Redis tidak merespons (kontrak §J)
+        $timeout = (float) config('chat.redis_timeout');
+        config([
+            'database.redis.default.timeout' => $timeout,
+            'database.redis.default.read_timeout' => $timeout,
+            'database.redis.default.read_write_timeout' => $timeout, // nama opsi untuk klien predis
+        ]);
     }
 }
