@@ -7,3 +7,4 @@ export const MOCK_USERS = [
     { id: 5, name: "Dewi Anggraini", last_seen_at: null },
     { id: 6, name: "Eko Wijaya", last_seen_at: "2026-10-10T08:00:00Z" },
 ];
+export const MOCK_REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];

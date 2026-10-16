@@ -1,6 +1,7 @@
 // resources/js/mocks/api.mock.js — pengganti api.js saat VITE_USE_MOCKS === "true"
 // Tips uji: kirim pesan berisi "#gagal" -> gagal sekali (tombol "Coba lagi"), retry berhasil dengan client_uuid yang sama.
 import { MOCK_REACTION_EMOJIS, MOCK_USERS } from "./data.js";
+import { uuidv4 } from "../lib/uuid.js";
 import { envelope, mockBus } from "./socket.mock.js";
 
 const delay = (ms = 150) => new Promise((r) => setTimeout(r, ms));
@@ -48,7 +49,7 @@ const store = new Map(); // convId -> [{ m: Message, u: updated_at }]
 const failedOnce = new Set();
 
 const makeMsg = (convId, from, to, body, t, status = "sent") => ({
-    id: nextMsgId++, conversation_id: convId, client_uuid: crypto.randomUUID(),
+    id: nextMsgId++, conversation_id: convId, client_uuid: uuidv4(),
     sender_id: from, recipient_id: to, body, reply_to: null, attachments: [], reactions: [],
     status, delivered_at: status === "sent" ? null : t, read_at: status === "read" ? t : null,
     edited_at: null, deleted_at: null, revision: 1, created_at: t,
@@ -68,7 +69,7 @@ const notifs = [];
 const notifUnread = () => notifs.filter((n) => !n.read_at).length;
 function addNotif(m, fromName) {
     const n = {
-        id: crypto.randomUUID(), type: "chat.message", title: `Pesan baru dari ${fromName}`, body: m.body,
+        id: uuidv4(), type: "chat.message", title: `Pesan baru dari ${fromName}`, body: m.body,
         data: { conversation_id: m.conversation_id, message_id: m.id, sender_id: m.sender_id, url: `/chat?conversation=${m.conversation_id}` },
         read_at: null, created_at: m.created_at,
     };
@@ -356,6 +357,15 @@ let nextAttId = 1;
 const failedUploads = new Set();
 const MOCK_MAX_MB = { image: 10, video: 50, audio: 20, file: 20 };
 
+function readDataUrl(file) {
+    return new Promise((resolve) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(fr.result);
+        fr.onerror = () => resolve("");
+        fr.readAsDataURL(file);
+    });
+}
+
 function imageSize(url) {
     return new Promise((resolve) => {
         const img = new Image();
@@ -376,7 +386,8 @@ async function finishUpload(file) {
         failedUploads.add(file.name);
         throw fail(500, "SERVER_ERROR", "Gagal menyimpan file (simulasi).");
     }
-    const url = URL.createObjectURL(file); // hanya mock; di mode asli selalu /api/v1/attachments/{id}/content
+    // hanya mock; di mode asli selalu /api/v1/attachments/{id}/content. Gambar memakai data: (CSP img-src 'self' data:)
+    const url = kind === "image" ? await readDataUrl(file) : URL.createObjectURL(file);
     const dims = kind === "image" ? await imageSize(url) : { width: null, height: null };
     const a = {
         id: nextAttId++, message_id: null, kind, original_name: file.name, mime_type: t || "application/octet-stream",

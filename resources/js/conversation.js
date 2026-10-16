@@ -1,9 +1,10 @@
 // resources/js/conversation.js — tampilan percakapan (Fase 2): riwayat, kirim, optimistic UI, ACK, resync
 import {
-    clearReaction, createConversation, deleteMessage, editMessage, getConversations, getMessages, getUser, markRead, sendMessage, setReaction, deleteAttachment, uploadAttachment,
+    clearReaction, createConversation, deleteMessage, editMessage, getConversations, getMessages, getUser, markRead, sendMessage, setReaction, deleteAttachment, uploadAttachment, USE_MOCKS,
 } from "./api.js";
 import { EV } from "./events.js";
 import { formatBytes, formatTime, lastSeenText } from "./format.js";
+import { uuidv4 } from "./lib/uuid.js";
 import { applyUnread, registerConversation } from "./unread.js";
 
 const $ = (id) => document.getElementById(id);
@@ -22,7 +23,6 @@ let isOnline = () => false;
 let onActive = () => {};
 let current = null; // { id, peer, token, hasMoreBefore, oldestId, serverTime, loadingOlder }
 let tokenSeq = 0;
-let connectedBefore = false;
 let readTimer = null;
 const byUuid = new Map(); // client_uuid -> Message (+ status lokal "sending"/"failed" untuk pesan optimistik)
 const acked = new Set(); // id pesan masuk yang sudah di-ACK / dilaporkan delivered
@@ -38,11 +38,11 @@ const ERR_TEXT = {
     FORBIDDEN: "Hanya pengirim yang dapat melakukan ini.",
     NOT_FOUND: "Pesan tidak ditemukan.",
     VALIDATION_ERROR: "Isi pesan tidak valid.",
-    RATE_LIMITED: "Terlalu banyak permintaan. Coba lagi sebentar.",
+    RATE_LIMITED: "Terlalu cepat, coba lagi sebentar.",
     SERVICE_UNAVAILABLE: "Layanan sedang tidak tersedia. Coba lagi nanti.",
 };
 // ui.compose = { mode: "reply" | "edit", uuid } (target = pesan di byUuid)
-const ui = { activeUuid: null, focusUuid: null, compose: null, peerTyping: false, peerTypingTimer: null, errorTimer: null };
+const ui = { activeUuid: null, focusUuid: null, compose: null, peerTyping: false, peerTypingTimer: null, errorTimer: null, retryTimer: null };
 const typing = { active: false, convId: null, lastSent: 0, stopTimer: null, blockedConv: null, pauseUntil: 0 };
 const TYPING_BACKOFF_MS = 15_000; // setelah RATE_LIMITED (Node maks 20 typing:*/menit/socket, §I.9)
 
@@ -55,7 +55,7 @@ const UPLOAD_ERR = {
     PAYLOAD_TOO_LARGE: "File terlalu besar.",
     UNSUPPORTED_MEDIA_TYPE: "Jenis file tidak diizinkan atau file rusak.",
     VALIDATION_ERROR: "File kosong, rusak, atau dimensi gambar terlalu besar.",
-    RATE_LIMITED: "Terlalu banyak unggahan. Coba lagi sebentar.",
+    RATE_LIMITED: "Terlalu cepat, coba lagi sebentar.",
     NETWORK_ERROR: "Tidak dapat terhubung ke server.",
     SERVER_ERROR: "Server bermasalah. Coba lagi.",
     SERVICE_UNAVAILABLE: "Layanan sedang tidak tersedia.",
@@ -106,7 +106,7 @@ const mineReaction = (m) => m.reactions?.find((r) => r.user_id === me())?.emoji 
 
 function showActionError(err) {
     const el = $("compose-error");
-    el.textContent = ERR_TEXT[err?.code] ?? err?.message ?? "Terjadi kesalahan. Coba lagi.";
+    el.textContent = (err?.code === "RATE_LIMITED" && err.message) || ERR_TEXT[err?.code] || err?.message || "Terjadi kesalahan. Coba lagi."; // 429: pesan memuat Retry-After
     el.hidden = false;
     clearTimeout(ui.errorTimer);
     ui.errorTimer = setTimeout(() => (el.hidden = true), 6000);
@@ -123,6 +123,7 @@ function smallBtn(label, onClick, cls = "text-slate-700") {
 
 // URL lampiran WAJIB same-origin (attachment.url / download_url, butuh cookie login); jangan pakai URL storage langsung
 function safeUrl(u) {
+    if (USE_MOCKS && /^(blob|data):/.test(u)) return u; // hanya data tiruan; di build produksi cabang ini dibuang
     try {
         const x = new URL(u, window.location.origin);
         return x.origin === window.location.origin ? x.href : null;
@@ -327,6 +328,13 @@ function buildItem(m) {
             btn.type = "button";
             btn.className = "underline focus:outline-none focus-visible:ring-2 focus-visible:ring-white";
             btn.textContent = "Coba lagi";
+            const wait = (m.retryAt ?? 0) - Date.now();
+            if (wait > 0) {
+                btn.disabled = true;
+                btn.classList.add("opacity-50");
+                clearTimeout(ui.retryTimer);
+                ui.retryTimer = setTimeout(() => render(), wait + 50);
+            }
             btn.addEventListener("click", () => retry(m.client_uuid));
             meta.append(btn);
             const drop = document.createElement("button");
@@ -478,7 +486,7 @@ async function loadOlder() {
 async function resync() {
     if (!current?.id) return;
     const tk = current.token;
-    if (!current.serverTime) return loadLatest();
+    if (!current.serverTime) return; // muat awal belum selesai
     try {
         const since = new Date(Date.parse(current.serverTime) - 5000).toISOString();
         const { messages, meta } = await getMessages(current.id, { updatedSince: since });
@@ -492,6 +500,8 @@ async function resync() {
         /* resync berikutnya (connect/sync:required) akan mencoba lagi */
     }
 }
+
+export const resyncOpenConversation = () => resync();
 
 // ---------- membuka percakapan ----------
 async function openPeer(peer, conv = null) {
@@ -564,7 +574,7 @@ async function submit(text, replyTo = null, atts = []) {
     const body = text.trim();
     if (!current?.id || (!body && atts.length === 0) || body.length > MAX_LEN) return;
     const m = {
-        id: null, client_uuid: crypto.randomUUID(), conversation_id: current.id, sender_id: me(), recipient_id: current.peer.id,
+        id: null, client_uuid: uuidv4(), conversation_id: current.id, sender_id: me(), recipient_id: current.peer.id,
         body: body || null,
         reply_to: replyTo
             ? {
@@ -586,10 +596,16 @@ async function post(m) {
         const saved = await sendMessage(m.conversation_id, { clientUuid: m.client_uuid, body: m.body, replyToId: m.reply_to?.id, attachmentIds: m.attachments.map((a) => a.id) });
         if (current?.token !== tk) return; // pindah percakapan; pesan sudah tersimpan di server
         upsert(saved); // ganti pesan optimistik (atau tidak berubah jika event message:new sudah lebih dulu)
-    } catch {
+    } catch (err) {
         if (current?.token !== tk) return;
         const cur = byUuid.get(m.client_uuid);
-        if (cur && cur.id == null) cur.status = "failed";
+        if (cur && cur.id == null) {
+            cur.status = "failed";
+            if (err?.status === 429) {
+                cur.retryAt = Date.now() + (err.retryAfter ?? 5) * 1000; // tombol "Coba lagi" aktif setelah Retry-After
+                showActionError(err);
+            }
+        }
     }
     render();
 }
@@ -611,9 +627,9 @@ function updateProgress(i) {
 function buildTrayItem(i) {
     const li = document.createElement("li");
     li.className = (i.status === "error" ? "border-red-300" : "border-slate-200") + " flex w-full items-center gap-2 rounded-lg border bg-white px-2 py-1.5 text-xs sm:w-64";
-    if (i.objUrl) {
+    if (i.thumb) {
         const img = document.createElement("img");
-        img.src = i.objUrl;
+        img.src = i.thumb;
         img.alt = "";
         img.className = "h-9 w-9 shrink-0 rounded object-cover";
         li.append(img);
@@ -663,14 +679,31 @@ function renderTray() {
     ul.hidden = tray.length === 0;
 }
 
+// Pratinjau kecil sebagai data: URL (CSP img-src 'self' data:); blob: akan ditolak CSP
+async function makeThumb(item) {
+    try {
+        const bmp = await createImageBitmap(item.file);
+        const c = document.createElement("canvas");
+        c.width = 72;
+        c.height = 72;
+        const sc = Math.max(72 / bmp.width, 72 / bmp.height);
+        c.getContext("2d").drawImage(bmp, (72 - bmp.width * sc) / 2, (72 - bmp.height * sc) / 2, bmp.width * sc, bmp.height * sc);
+        bmp.close?.();
+        item.thumb = c.toDataURL("image/jpeg", 0.7);
+        if (tray.includes(item)) renderTray();
+    } catch {
+        /* tanpa pratinjau: ikon jenis file dipakai */
+    }
+}
+
 function addFiles(files) {
     if (!current?.id || ui.compose?.mode === "edit") return;
     [...files].forEach((file) => {
         const kind = classify(file);
         const item = {
-            key: crypto.randomUUID(), file, name: file.name, size: file.size, kind, status: "queued", progress: 0,
+            key: uuidv4(), file, name: file.name, size: file.size, kind, status: "queued", progress: 0,
             attachment: null, error: null, clientRejected: false, abort: null, barEl: null, statusEl: null,
-            objUrl: kind === "image" ? URL.createObjectURL(file) : null,
+            thumb: null,
         };
         // Cek client hanya untuk UX; server tetap menolak dengan 413 / 415 / 422
         const reject = (msg) => {
@@ -682,6 +715,7 @@ function addFiles(files) {
         else if (file.size === 0) reject("File kosong.");
         else if (file.size > maxMB(kind) * 1024 * 1024) reject(`File terlalu besar (maks ${maxMB(kind)} MB untuk ${KIND_LABEL[kind].toLowerCase()}).`);
         tray.push(item);
+        if (kind === "image" && !item.clientRejected) makeThumb(item);
     });
     renderTray();
     pumpUploads();
@@ -719,7 +753,7 @@ function startUpload(item) {
             (err) => {
                 if (err?.aborted || !tray.includes(item)) return;
                 item.status = "error";
-                item.error = UPLOAD_ERR[err.code] ?? err.message ?? "Gagal mengunggah.";
+                item.error = (err.code === "RATE_LIMITED" && err.message) || UPLOAD_ERR[err.code] || err.message || "Gagal mengunggah.";
             },
         )
         .finally(() => {
@@ -740,7 +774,6 @@ function removeItem(item) {
     const i = tray.indexOf(item);
     if (i === -1) return;
     tray.splice(i, 1);
-    if (item.objUrl) URL.revokeObjectURL(item.objUrl);
     item.abort?.();
     if (item.status === "ready" && item.attachment) deleteAttachment(item.attachment.id).catch(() => {}); // DELETE /attachments/{id}
     renderTray();
@@ -750,7 +783,6 @@ function removeItem(item) {
 // cleanup=true: batalkan unggahan & hapus lampiran pending di server; false: lampiran sudah dipakai pesan
 function clearTray(cleanup) {
     tray.splice(0).forEach((item) => {
-        if (item.objUrl) URL.revokeObjectURL(item.objUrl);
         if (!cleanup) return;
         item.abort?.();
         if (item.status === "ready" && item.attachment) deleteAttachment(item.attachment.id).catch(() => {});
@@ -1131,7 +1163,6 @@ export function bindSocket(s) {
 
     sock.on(EV.TYPING_UPDATE, onTypingUpdate);
 
-    sock.on(EV.SYNC_REQUIRED, () => resync());
 
     sock.onLifecycle("disconnect", () => {
         typing.active = false;
@@ -1139,9 +1170,6 @@ export function bindSocket(s) {
         hidePeerTyping();
     });
 
-    sock.onLifecycle("connect", () => {
-        if (connectedBefore) resync();
-        else reportDelivered([...byUuid.values()]);
-        connectedBefore = true;
-    });
+    // resync (updated_since) dipicu oleh resync.js pada connect & sync:required
+    sock.onLifecycle("connect", () => reportDelivered([...byUuid.values()]));
 }

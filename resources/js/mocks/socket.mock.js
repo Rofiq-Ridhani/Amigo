@@ -1,5 +1,7 @@
 // resources/js/mocks/socket.mock.js — Socket.IO tiruan (envelope §E.2, payload §E.3)
-export const envelope = (data) => ({ event_id: crypto.randomUUID(), occurred_at: new Date().toISOString(), data });
+import { uuidv4 } from "../lib/uuid.js";
+
+export const envelope = (data) => ({ event_id: uuidv4(), occurred_at: new Date().toISOString(), data });
 
 let active = null;
 // Dipakai api.mock.js untuk mensimulasikan event server (message:new, message:delivery)
@@ -14,6 +16,13 @@ export function createMockSocket() {
     const socket = {
         connected: false,
         fire,
+        connect() {
+            at(100, () => {
+                socket.connected = true;
+                fire("connect");
+                fire("presence:snapshot", envelope({ online_user_ids: [2, 3] }));
+            });
+        },
         on(name, h) {
             handlers.set(name, [...(handlers.get(name) ?? []), h]);
         },
