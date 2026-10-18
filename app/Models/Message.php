@@ -13,7 +13,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * Pesan (kontrak §C.3). Dihapus = soft delete -> tampil sebagai tombstone.
  */
 #[Fillable([
-    'conversation_id', 'sender_id', 'recipient_id', 'client_uuid', 'reply_to_id',
+    'conversation_id', 'sender_id', 'recipient_id', 'client_uuid', 'reply_to_id', 'thread_id',
     'body', 'revision', 'delivered_at', 'read_at', 'edited_at',
 ])]
 class Message extends Model
@@ -42,6 +42,18 @@ class Message extends Model
     public function replyTo(): BelongsTo
     {
         return $this->belongsTo(self::class, 'reply_to_id')->withTrashed();
+    }
+
+    /** Thread tempat pesan ini berada (null = bukan balasan thread). */
+    public function thread(): BelongsTo
+    {
+        return $this->belongsTo(self::class, 'thread_id');
+    }
+
+    /** Semua balasan dalam thread ini (pesan dengan thread_id = id pesan ini). */
+    public function threadReplies(): HasMany
+    {
+        return $this->hasMany(self::class, 'thread_id');
     }
 
     public function mentions(): HasMany

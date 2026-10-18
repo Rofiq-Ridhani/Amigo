@@ -32,6 +32,7 @@ class MessageService
      *
      * @param  array<int,int>  $attachmentIds
      * @param  array<int,int>  $mentionIds  hanya untuk grup
+     * @param  int|null  $threadId  balasan dalam thread (Fase 9, hanya grup)
      * @return array{0:Message,1:bool} [pesan, apakah baru dibuat]
      */
     public function send(
@@ -42,6 +43,7 @@ class MessageService
         ?int $replyToId = null,
         array $attachmentIds = [],
         array $mentionIds = [],
+        ?int $threadId = null,
     ): array {
         $existing = $this->findExisting($sender, $clientUuid, $conversation);
 
@@ -57,16 +59,17 @@ class MessageService
         // Diperiksa SETELAH pengecekan idempotensi: kirim ulang dengan client_uuid yang sama
         // (lampiran sudah terpakai oleh pesan itu) tetap harus berhasil.
         $this->assertAttachmentsUsable($sender, $attachmentIds);
-        $this->assertGroupRules($conversation, $sender, $replyToId, $mentionIds);
+        $this->assertGroupRules($conversation, $sender, $replyToId, $mentionIds, $threadId);
 
         try {
-            [$message, $notifications] = DB::transaction(function () use ($conversation, $sender, $recipientId, $clientUuid, $body, $replyToId, $attachmentIds, $mentionIds, $isGroup) {
+            [$message, $notifications] = DB::transaction(function () use ($conversation, $sender, $recipientId, $clientUuid, $body, $replyToId, $attachmentIds, $mentionIds, $isGroup, $threadId) {
                 $message = Message::create([
                     'conversation_id' => $conversation->id,
                     'sender_id' => $sender->id,
                     'recipient_id' => $recipientId,
                     'client_uuid' => $clientUuid,
                     'reply_to_id' => $replyToId,
+                    'thread_id' => $threadId,
                     'body' => $body,
                     'revision' => 1,
                 ]);
@@ -123,9 +126,16 @@ class MessageService
         return [$message, true];
     }
 
-    /** `message:new` + `unread:update` (kontrak §E.3, §H.4). Panggil SETELAH commit. */
+    /** `message:new` + `unread:update` (kontrak §E.3, §H.4). Atau thread:message:new untuk thread (kontrak §18). Panggil SETELAH commit. */
     private function publishNew(Conversation $conversation, User $sender, Message $message, ?int $recipientId): void
     {
+        // Thread: notifikasi HANYA ke peserta thread (penulis asal + yang pernah balas)
+        if ($message->thread_id !== null) {
+            $this->publishThreadNew($conversation, $sender, $message);
+
+            return;
+        }
+
         if ($recipientId !== null) {
             $this->realtime->publish(
                 'messages',
@@ -163,16 +173,62 @@ class MessageService
         }
     }
 
+    /** Thread: notifikasi ke penulis asal thread + peserta thread lainnya (kontrak §18). */
+    private function publishThreadNew(Conversation $conversation, User $sender, Message $message): void
+    {
+        // Peserta thread = penulis asal thread + semua yang sudah balas di thread itu
+        $threadRoot = Message::find($message->thread_id);
+        $participantIds = [$threadRoot->sender_id];
+
+        Message::where('thread_id', $message->thread_id)
+            ->where('id', '!=', $message->id)
+            ->distinct()
+            ->pluck('sender_id')
+            ->each(function ($id) use (&$participantIds) {
+                if (! in_array($id, $participantIds, true)) {
+                    $participantIds[] = $id;
+                }
+            });
+
+        // Event thread ke peserta thread saja
+        $this->realtime->publish(
+            'messages',
+            'thread:message:new',
+            $participantIds,
+            ['message' => $message->toApiArray(), 'thread_id' => $message->thread_id],
+        );
+
+        // Notifikasi ke peserta thread (kecuali pengirim)
+        foreach ($participantIds as $userId) {
+            if ($userId === $sender->id) {
+                continue;
+            }
+
+            $threadRoot->load('attachments'); // Pastikan data lengkap
+            $this->notifications->createForThreadMention(
+                $message,
+                $sender->name,
+                (string) $conversation->name,
+                $userId,
+                $threadRoot,
+            );
+        }
+    }
+
     /**
      * Aturan khusus grup/direct sebelum menyimpan.
      *
      * @param  array<int,int>  $mentionIds
      */
-    private function assertGroupRules(Conversation $conversation, User $sender, ?int $replyToId, array $mentionIds): void
+    private function assertGroupRules(Conversation $conversation, User $sender, ?int $replyToId, array $mentionIds, ?int $threadId = null): void
     {
         if (! $conversation->isGroup()) {
             if ($mentionIds !== []) {
                 throw ValidationException::withMessages(['mention_ids' => 'Mention hanya tersedia di grup.']);
+            }
+
+            if ($threadId !== null) {
+                throw ValidationException::withMessages(['thread_id' => 'Thread hanya tersedia di grup.']);
             }
 
             return;

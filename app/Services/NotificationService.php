@@ -16,6 +16,8 @@ class NotificationService
 
     public const TYPE_CHAT_MENTION = 'chat.mention';
 
+    public const TYPE_CHAT_MENTION_THREAD = 'chat.mention_thread';
+
     public function __construct(private readonly RealtimePublisher $realtime) {}
 
     /** Buat notifikasi untuk penerima pesan. Panggil DI DALAM transaksi penyimpanan pesan. */
@@ -52,6 +54,26 @@ class NotificationService
                 'message_id' => $message->id,
                 'sender_id' => $message->sender_id,
                 'url' => '/chat?conversation='.$message->conversation_id,
+            ],
+        ]);
+    }
+
+    /** Notifikasi mention di thread. Panggil DI DALAM transaksi pesan. */
+    public function createForThreadMention(Message $message, string $senderName, string $groupName, int $userId, Message $threadRoot): ChatNotification
+    {
+        $preview = mb_substr(trim((string) $message->body), 0, 100);
+
+        return ChatNotification::create([
+            'user_id' => $userId,
+            'type' => self::TYPE_CHAT_MENTION_THREAD,
+            'title' => $senderName.' membalas di thread '.$groupName,
+            'body' => $preview !== '' ? $preview : 'Mengirim lampiran',
+            'data' => [
+                'conversation_id' => $message->conversation_id,
+                'message_id' => $message->id,
+                'thread_id' => $message->thread_id,
+                'sender_id' => $message->sender_id,
+                'url' => '/chat?conversation='.$message->conversation_id.'&thread='.$message->thread_id,
             ],
         ]);
     }
