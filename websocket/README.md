@@ -24,6 +24,7 @@ Cek hidup: `http://localhost:3001/health` (memuat status Redis).
 | `npm run smoke` | Uji autentikasi & presence |
 | `npm run smoke:messages` | Uji jalur Redis → Socket.IO (pesan fiktif) |
 | `npm run smoke:typing -- <conversation_id> <userA> <userB>` | Uji typing (butuh percakapan nyata) |
+| `npm run smoke:group -- <group_id>` | Uji event & typing grup (butuh grup nyata dengan minimal 3 anggota; anggota diambil otomatis dari Laravel) |
 | `npm run listen -- 2` | Mendengarkan sebagai user 2 dan mencetak semua event (otomatis ACK) |
 
 ## Event
@@ -40,7 +41,10 @@ Server → client (semua memakai envelope `{ event_id, occurred_at, data }`):
 | `message:updated` | pengirim + penerima | – | `{ message: Message }` |
 | `message:deleted` | pengirim + penerima | – | `{ conversation_id, message_id, revision, deleted_at }` |
 | `message:reaction` | pengirim + penerima | – | `{ conversation_id, message_id, revision, reactions: [{user_id, emoji}] }` (seluruh daftar) |
-| `typing:update` | lawan bicara | – | `{ conversation_id, user_id, is_typing }` |
+| `conversation:updated` | semua anggota grup | – | `{ conversation_id, reason: "created"\|"renamed"\|"members_added"\|"member_removed"\|"member_left" }` |
+| `conversation:removed` | user yang keluar/dikeluarkan | – | `{ conversation_id }` |
+| `group:read` | anggota grup selain pembaca | – | `{ conversation_id, reader_id, from_message_id, up_to_message_id, read_at }` |
+| `typing:update` | semua peserta lain | – | `{ conversation_id, user_id, is_typing }` |
 | `notification:new` | penerima notifikasi | **ya** (hanya dicatat) | `{ notification: Notification, unread_count }` |
 | `notification:read` | semua tab satu user | – | `{ ids: [..] \| null, all: false, unread_count }` |
 | `sync:required` | semua | – | `{ reason: "redis_reconnected", server_time }` |

@@ -33,7 +33,7 @@ class MessageController extends Controller
 
         $base = Message::withTrashed()
             ->where('conversation_id', $conversation->id)
-            ->with(['replyTo.attachments', 'reactions', 'attachments']);
+            ->with(['replyTo.attachments', 'reactions', 'attachments', 'mentions']);
 
         $hasMoreBefore = false;
         $hasMore = false;
@@ -65,6 +65,12 @@ class MessageController extends Controller
             $rows = $rows->take($limit)->sortBy('id')->values(); // urut lama -> baru
         }
 
+        // Pesan grup butuh daftar anggota (kursor baca) untuk `read_by_count`: dimuat SEKALI per permintaan
+        if ($conversation->isGroup()) {
+            $conversation->load('activeMembers');
+            $rows->each(fn (Message $m) => $m->setRelation('conversation', $conversation));
+        }
+
         return ApiResponse::success(
             ['messages' => $rows->map(fn (Message $m) => $m->toApiArray())->values()->all()],
             'OK',
@@ -90,6 +96,9 @@ class MessageController extends Controller
             'body' => ['nullable', 'string', 'max:'.config('chat.message_max_length'), 'required_without:attachment_ids'],
             'attachment_ids' => ['nullable', 'array', 'max:'.config('chat.limits.attachments_per_message')],
             'attachment_ids.*' => ['integer', 'min:1', 'distinct'],
+            // Mention: hanya grup, hanya anggota lain (diperiksa di MessageService, kontrak §17)
+            'mention_ids' => ['nullable', 'array', 'max:20'],
+            'mention_ids.*' => ['integer', 'min:1', 'distinct'],
             'reply_to_id' => [
                 'nullable',
                 'integer',
@@ -106,6 +115,7 @@ class MessageController extends Controller
             $data['body'] ?? null,
             isset($data['reply_to_id']) ? (int) $data['reply_to_id'] : null,
             $data['attachment_ids'] ?? [],
+            $data['mention_ids'] ?? [],
         );
 
         return ApiResponse::success(

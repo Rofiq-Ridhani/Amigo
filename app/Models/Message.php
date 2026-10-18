@@ -44,6 +44,11 @@ class Message extends Model
         return $this->belongsTo(self::class, 'reply_to_id')->withTrashed();
     }
 
+    public function mentions(): HasMany
+    {
+        return $this->hasMany(MessageMention::class)->orderBy('id');
+    }
+
     public function attachments(): HasMany
     {
         return $this->hasMany(Attachment::class)->orderBy('id');
@@ -69,6 +74,37 @@ class Message extends Model
             ->map(fn (MessageReaction $r) => ['user_id' => (int) $r->user_id, 'emoji' => $r->emoji])
             ->values()
             ->all();
+    }
+
+    /**
+     * Id user yang di-@mention (hanya pesan grup). Pesan direct tidak punya mention.
+     *
+     * @return array<int,int>
+     */
+    public function mentionIds(): array
+    {
+        if ($this->recipient_id !== null) {
+            return [];
+        }
+
+        return $this->mentions->pluck('user_id')->map(fn ($id) => (int) $id)->values()->all();
+    }
+
+    /**
+     * Jumlah anggota (selain pengirim) yang sudah membaca pesan grup ini, dari kursor baca mereka.
+     * null untuk pesan direct (status dibaca direct memakai read_at). Pemanggil sebaiknya sudah
+     * memuat relasi `conversation.activeMembers` agar tidak ada query per pesan.
+     */
+    public function readByCount(): ?int
+    {
+        if ($this->recipient_id !== null) {
+            return null; // pesan direct
+        }
+
+        return $this->conversation->activeMembers
+            ->filter(fn (ConversationMember $m) => (int) $m->user_id !== (int) $this->sender_id
+                && (int) $m->last_read_message_id >= (int) $this->id)
+            ->count();
     }
 
     /** sent -> delivered -> read (kontrak §H.2). Dihitung server, bukan client. */
@@ -100,6 +136,8 @@ class Message extends Model
             'reply_to' => $deleted ? null : $this->replyPreview(),
             'attachments' => $deleted ? [] : $this->attachments->map(fn (Attachment $a) => $a->toApiArray())->values()->all(),
             'reactions' => $this->reactionsForApi(),
+            'mentions' => $deleted ? [] : $this->mentionIds(),
+            'read_by_count' => $deleted ? null : $this->readByCount(),
             'status' => $this->status(),
             'delivered_at' => Iso::format($this->delivered_at),
             'read_at' => Iso::format($this->read_at),

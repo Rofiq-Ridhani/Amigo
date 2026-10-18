@@ -7,6 +7,7 @@
 //   Fase 4 : meneruskan notification:new (+ACK, hanya dicatat) dan notification:read.
 //   Fase 5 : meneruskan message:updated/deleted/reaction; typing:start/stop -> typing:update.
 //   Fase 7 : penguatan — batas koneksi per user, ukuran payload, penanganan error tak terduga.
+//   Fase 8 : grup — typing ke banyak anggota; meneruskan conversation:updated/removed dan group:read.
 // Kontrak: AMIGO_TECHNICAL_CONTRACT.md §E, §H, §D.9, §J.
 
 const path = require('node:path');
@@ -60,6 +61,9 @@ const ALLOWED_REDIS_EVENTS = new Set([
   'unread:update',
   'notification:new',
   'notification:read',
+  'conversation:updated',
+  'conversation:removed',
+  'group:read',
 ]);
 
 function fatal(msg) {
@@ -270,6 +274,12 @@ function parseRedisEnvelope(raw) {
 }
 
 function dispatchEnvelope(env) {
+  // Keanggotaan grup berubah: cache peserta untuk typing harus diambil ulang (kontrak §17)
+  if (env.event === 'conversation:updated' || env.event === 'conversation:removed') {
+    const changed = env.data && env.data.conversation_id;
+    if (isPositiveInt(changed)) participantsCache.delete(changed);
+  }
+
   const payload = { event_id: env.event_id, occurred_at: env.occurred_at, data: env.data };
 
   for (const userId of new Set(env.to)) {
@@ -351,9 +361,9 @@ subscriber.psubscribe(`*${CHAT_CHANNEL}`, `*${NOTIFICATION_CHANNEL}`, (err) => {
 subscriber.on('pmessage', (_pattern, _channel, message) => handleRedisMessage(message));
 
 // ---------- Typing indicator (kontrak §E.4, §H.3) ----------
-/** conversationId -> { ids: [userA, userB], expires } */
+/** conversationId -> { ids: [semua peserta aktif], expires } */
 const participantsCache = new Map();
-/** `${userId}:${conversationId}` -> { timer, socketId, peerId, userId, conversationId } */
+/** `${userId}:${conversationId}` -> { timer, socketId, peerIds, userId, conversationId } */
 const typingStates = new Map();
 
 setInterval(() => {
@@ -371,25 +381,29 @@ async function getParticipants(conversationId) {
     delays: [300],
   });
   const ids = result && result.data && result.data.user_ids;
-  if (!Array.isArray(ids) || ids.length !== 2 || !ids.every(isPositiveInt)) return null;
+  // direct: 2 id; grup: 2..50 anggota aktif
+  if (!Array.isArray(ids) || ids.length < 2 || ids.length > 50 || !ids.every(isPositiveInt)) return null;
 
   participantsCache.set(conversationId, { ids, expires: Date.now() + PARTICIPANTS_TTL_MS });
   return ids;
 }
 
 function emitTyping(state, isTyping) {
-  io.to(`user:${state.peerId}`).emit(
-    'typing:update',
-    envelope({ conversation_id: state.conversationId, user_id: state.userId, is_typing: isTyping }),
-  );
+  // Semua peserta lain (1 lawan bicara pada direct, banyak anggota pada grup); tidak ke pengetik sendiri
+  for (const peerId of state.peerIds) {
+    io.to(`user:${peerId}`).emit(
+      'typing:update',
+      envelope({ conversation_id: state.conversationId, user_id: state.userId, is_typing: isTyping }),
+    );
+  }
 }
 
-function startTyping(socket, userId, conversationId, peerId) {
+function startTyping(socket, userId, conversationId, peerIds) {
   const key = `${userId}:${conversationId}`;
   const previous = typingStates.get(key);
   if (previous) clearTimeout(previous.timer);
 
-  const state = { userId, conversationId, peerId, socketId: socket.id, timer: null };
+  const state = { userId, conversationId, peerIds, socketId: socket.id, timer: null };
   state.timer = setTimeout(() => {
     typingStates.delete(key);
     emitTyping(state, false); // kedaluwarsa: tidak ada typing:start baru
@@ -452,7 +466,7 @@ async function handleTyping(socket, kind, payload, ack) {
 
   if (kind === 'start') {
     socket.data.lastTypingStart = Date.now();
-    startTyping(socket, userId, conversationId, ids.find((id) => id !== userId));
+    startTyping(socket, userId, conversationId, ids.filter((id) => id !== userId));
   } else {
     stopTyping(userId, conversationId);
   }

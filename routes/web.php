@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\AttachmentController;
 use App\Http\Controllers\Api\ConversationController;
+use App\Http\Controllers\Api\GroupController;
 use App\Http\Controllers\Api\MeController;
 use App\Http\Controllers\Api\MessageActionController;
 use App\Http\Controllers\Api\MessageController;
@@ -38,11 +39,21 @@ Route::middleware('auth')->group(function () {
 
         // Fase 2: percakapan & pesan
         Route::get('/conversations', [ConversationController::class, 'index']);
+        Route::get('/conversations/{id}', [ConversationController::class, 'show'])->whereNumber('id');
         Route::post('/conversations', [ConversationController::class, 'store'])->middleware('throttle:30,1');
         Route::get('/conversations/{id}/messages', [MessageController::class, 'index'])->whereNumber('id');
         Route::post('/conversations/{id}/messages', [MessageController::class, 'store'])
             ->whereNumber('id')
             ->middleware('throttle:30,1');
+
+        // Fase 8: grup
+        Route::post('/groups', [GroupController::class, 'store'])->middleware('throttle:10,1');
+        Route::patch('/groups/{id}', [GroupController::class, 'update'])->whereNumber('id')->middleware('throttle:30,1');
+        Route::post('/groups/{id}/members', [GroupController::class, 'addMembers'])->whereNumber('id')->middleware('throttle:30,1');
+        Route::delete('/groups/{id}/members/{userId}', [GroupController::class, 'removeMember'])
+            ->whereNumber(['id', 'userId'])
+            ->middleware('throttle:30,1');
+        Route::post('/groups/{id}/leave', [GroupController::class, 'leave'])->whereNumber('id')->middleware('throttle:30,1');
 
         // Fase 3: status baca & unread
         Route::post('/conversations/{id}/read', [ReadStateController::class, 'markRead'])
