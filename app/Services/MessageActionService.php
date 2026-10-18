@@ -83,11 +83,17 @@ class MessageActionService
         ]);
 
         // Pesan terhapus tidak lagi dihitung sebagai unread (kontrak §C.8)
-        $this->realtime->publish('messages', 'unread:update', [$fresh->recipient_id], [
-            'conversation_id' => $fresh->conversation_id,
-            'unread_count' => $this->unread->forConversation($fresh->recipient_id, $fresh->conversation_id),
-            'total_unread' => $this->unread->total($fresh->recipient_id),
-        ]);
+        foreach ($this->participants($fresh) as $userId) {
+            if ($userId === (int) $fresh->sender_id) {
+                continue;
+            }
+
+            $this->realtime->publish('messages', 'unread:update', [$userId], [
+                'conversation_id' => $fresh->conversation_id,
+                'unread_count' => $this->unread->forConversation($userId, $fresh->conversation_id),
+                'total_unread' => $this->unread->total($userId),
+            ]);
+        }
 
         return $fresh;
     }
@@ -166,12 +172,22 @@ class MessageActionService
 
     private function fresh(int $messageId): Message
     {
-        return Message::withTrashed()->with(['replyTo.attachments', 'reactions', 'attachments'])->findOrFail($messageId);
+        return Message::withTrashed()
+            ->with(['replyTo.attachments', 'reactions', 'attachments', 'mentions', 'conversation.activeMembers'])
+            ->findOrFail($messageId);
     }
 
-    /** @return array<int,int> */
+    /**
+     * Penerima event: pasangan (direct) atau seluruh anggota aktif (grup).
+     *
+     * @return array<int,int>
+     */
     private function participants(Message $message): array
     {
-        return [(int) $message->sender_id, (int) $message->recipient_id];
+        if ($message->recipient_id !== null) {
+            return [(int) $message->sender_id, (int) $message->recipient_id];
+        }
+
+        return $message->conversation->participantIds();
     }
 }

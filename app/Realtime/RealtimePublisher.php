@@ -29,6 +29,8 @@ class RealtimePublisher
         'message:reaction',
         'message:read',
         'notification:new',
+        'conversation:updated',
+        'conversation:removed',
     ];
 
     /**

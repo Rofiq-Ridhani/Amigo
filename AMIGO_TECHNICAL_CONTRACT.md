@@ -1,6 +1,6 @@
 # AMIGO — TECHNICAL CONTRACT
 
-**Contract version:** `0.3.0` · **Status:** siap dipakai Backend + Frontend (semua keputusan terbuka sudah diberi nilai default di §14) · **Bahasa dokumen:** Indonesia, nama teknis tetap Inggris
+**Contract version:** `0.4.0` · **Status:** siap dipakai Backend + Frontend (semua keputusan terbuka sudah diberi nilai default di §14) · **Bahasa dokumen:** Indonesia, nama teknis tetap Inggris
 
 > Dokumen ini adalah **satu-satunya sumber acuan** untuk AI Backend dan AI Frontend.
 > Jika kode dan dokumen bertentangan, **jangan memperbaiki diam-diam di satu sisi** — ikuti prosedur di §0.3.
@@ -881,6 +881,7 @@ Socket.IO **Connection State Recovery tidak diandalkan** (tidak ada jaminan lint
 | CC-005 | 2026-10-16 | `0.2.4` (Fase 5): (a) urutan pemeriksaan aksi pesan: bukan peserta `404` → bukan pengirim `403` → pesan terhapus `409 MESSAGE_DELETED` → lewat batas edit `409 EDIT_WINDOW_EXPIRED` → input `422`; (b) edit dengan teks sama → `200` tanpa event dan tanpa kenaikan `revision`; (c) hapus: reaksi pesan itu dihapus, `unread:update` dikirim ke penerima, notifikasi terkait TIDAK diubah (sesuai §C.9); (d) reaksi: emoji harus persis sama dengan allow-list (termasuk ❤️ yang memuat U+FE0F), `message:reaction` selalu membawa SELURUH daftar `reactions`, reaksi/hapus-reaksi yang tidak mengubah apa pun tidak menaikkan `revision` dan tidak mengirim event; `DELETE …/reaction` pada pesan terhapus tetap `200`; (e) typing: setiap `typing:start` yang diterima (maks 1 / 2 dtk / socket) diteruskan sebagai `typing:update` `is_typing:true` ke lawan bicara saja; `is_typing:false` dikirim saat `typing:stop`, 5 dtk tanpa `typing:start`, atau socket pengirim putus; kode error ACK: `VALIDATION_ERROR`, `FORBIDDEN`, `RATE_LIMITED`, `UNAVAILABLE`; (f) `GET /internal/v1/conversations/{id}/participants` menandatangani body kosong; (g) tidak ada perubahan nama field/event/endpoint | Backend (beri tahu Frontend) |
 | CC-006 | 2026-10-17 | `0.2.5` (Fase 6): (a) jenis file ditentukan dari ISI file (finfo); ekstensi/Content-Type client tidak dipercaya, dan file disimpan dengan ekstensi hasil deteksi; `original_name` hanya untuk tampilan (path dibuang, karakter kontrol dihapus, maks 255); (b) rekaman `audio/webm` terdeteksi sebagai `video/webm` oleh finfo, maka dianggap audio bila client mengirim Content-Type `audio/webm` atau ekstensi `.weba` (klasifikasi saja, bukan keamanan); (c) kode error upload: `413 PAYLOAD_TOO_LARGE` (melebihi batas jenis/ server), `415 UNSUPPORTED_MEDIA_TYPE` (jenis tidak diizinkan/gambar rusak), `422 VALIDATION_ERROR` (tanpa file, file kosong, dimensi gambar > 100 juta piksel); (d) `POST …/messages`: `body` boleh kosong bila ada `attachment_ids` dan sebaliknya; lampiran harus milik pengirim, belum terlampir, tanpa duplikat, maks 5, jika tidak `422` pada `attachment_ids`; kirim ulang dengan `client_uuid` yang sama tetap `200` walau lampiran sudah terpakai; (e) hapus pesan menghapus baris `attachments` dan file SECARA SINKRON (bukan lewat job); (f) lampiran pending > 24 jam dihapus oleh `php artisan attachments:prune` (dijadwalkan tiap jam; butuh `php artisan schedule:work` atau cron); (g) `…/content`: `Content-Type` dari hasil deteksi, `X-Content-Type-Options: nosniff`, `Cache-Control: private, max-age=3600`, mendukung `Range`; gambar/video/audio tampil `inline`, dokumen selalu `attachment`, `?download=1` memaksa unduh; pesan terhapus = `404`; (h) tidak ada perubahan nama field/event/endpoint, dan Node tidak berubah (media tidak lewat Socket.IO) | Backend (beri tahu Frontend) |
 | CC-007 | 2026-10-18 | `0.3.0` (Fase 7, penguatan): (a) **Outbox**: event durable (`message:new|updated|deleted|reaction|read`, `notification:new`) dicatat di `outbox_events` tepat sebelum dipublish dan ditandai terkirim bila Redis menerima; yang gagal dikirim ulang oleh `php artisan outbox:flush` (tiap menit, berhenti di kegagalan pertama, memakai `event_id` yang sama); yang belum terkirim > 30 menit dibuang; terkirim > 24 jam dibersihkan. `unread:update` dan `notification:read` TIDAK di-outbox (snapshot angka absolut; dipulihkan `sync:required` + polling §H.6). DEVIASI dari §J: catatan outbox ditulis setelah commit pesan, bukan dalam transaksi yang sama — menutup kasus Redis mati, tidak menutup kasus proses mati di antara commit dan pencatatan (client resync); (b) rate limit tambahan: registrasi 10/menit/IP; (c) header keamanan di semua respons web/API: `X-Content-Type-Options`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`; CSP via `CHAT_CSP_MODE` = `off` / `report-only` (DEFAULT, tidak memblokir) / `enforce`; saat ini `script-src` memuat `'unsafe-inline'` karena `window.AMIGO` inline (§B.3); respons `…/attachments/{id}/content` memakai `Content-Security-Policy: default-src 'none'; sandbox`; (d) Node: maksimal 10 koneksi per akun (koneksi ke-11 → `connect_error` `too_many_connections`), payload event maksimal 64 KB (lebih besar → koneksi diputus), handshake harus selesai dalam 10 detik, kegagalan tak terduga pada satu handler tidak mematikan server; (e) timeout koneksi/baca Redis di Laravel 1,5 detik (`REDIS_TIMEOUT`); (f) perintah `php artisan amigo:doctor` memeriksa konfigurasi, database, Redis, dan server Socket.IO; (g) tidak ada perubahan nama field/event/endpoint | Backend (beri tahu Frontend) |
+| CC-008 | 2026-10-20 | `0.4.0` (Fase 8, grup + mention; rincian di §17): (a) percakapan baru bertipe `group`; Conversation, Message, dan beberapa event mendapat field tambahan (hanya MENAMBAH, tidak ada yang diubah/dihapus); (b) endpoint baru `GET /conversations/{id}`, `POST /groups`, `PATCH /groups/{id}`, `POST /groups/{id}/members`, `DELETE /groups/{id}/members/{userId}`, `POST /groups/{id}/leave`; (c) event baru `conversation:updated`, `conversation:removed`, `group:read`; (d) `POST …/messages` menerima `mention_ids` (hanya grup) dan MENOLAK `reply_to_id` pada grup (balasan grup = thread, Fase 9); (e) `conversations.user_one_id/user_two_id` dan `messages.recipient_id` kini boleh NULL (khusus grup); (f) typing dan participants internal mendukung banyak anggota; (g) chat pribadi dan reply gaya WhatsApp TIDAK berubah | Backend (beri tahu Frontend) |
 
 ## 15. Status Implementasi (diperbarui Backend tiap fase)
 
@@ -898,8 +899,10 @@ Socket.IO **Connection State Recovery tidak diandalkan** (tidak ada jaminan lint
 | §D.5 `PATCH /api/v1/messages/{id}`, `DELETE /api/v1/messages/{id}`, `PUT/DELETE /api/v1/messages/{id}/reaction`; §E `message:updated`, `message:deleted`, `message:reaction`, `typing:start/stop` (client→server), `typing:update` | ✅ Fase 5 |
 | §D.6, §G `POST /api/v1/attachments`, `DELETE /api/v1/attachments/{id}`, `GET /api/v1/attachments/{id}/content`; `attachment_ids` pada `POST …/messages`; `attachments` pada Message | ✅ Fase 6 |
 | §I, §J penguatan: rate limit, outbox + `outbox:flush`, header keamanan + CSP, batas koneksi Node, `amigo:doctor` | ✅ Fase 7 |
+| §17 grup: buat/ganti nama/tambah/keluarkan/keluar, pesan grup, unread & "dibaca oleh", mention, typing grup | ✅ Fase 8 |
+| §17 thread (balasan bergaya Slack di grup) | ⏳ Fase 9 |
 
-**Seluruh fase MVP (1–7) selesai di sisi Backend.** Fase 8 (handshake antar-user, mention) tetap opsional dan hanya dikerjakan bila pembimbing memintanya (D-03, D-07).
+**Seluruh fase MVP (1–7) selesai di sisi Backend.** Fase 8 (grup + mention) selesai; Fase 9 (thread) berikutnya. Handshake antar-user (D-03) tetap opsional dan hanya dikerjakan bila pembimbing memintanya. (D-07 mention: dikerjakan di Fase 8, khusus grup.)
 
 ---
 
@@ -908,3 +911,81 @@ Socket.IO **Connection State Recovery tidak diandalkan** (tidak ada jaminan lint
 Lihat `docs/RELIABILITY_DRILLS.md` untuk latihan keandalan langkah demi langkah dan daftar periksa produksi.
 Ringkasnya: `php artisan test` hijau → `php artisan amigo:doctor` hijau → secret baru → `APP_DEBUG=false` →
 `/internal/*` tidak publik → CSP diubah ke `enforce` setelah Frontend bebas pelanggaran → penjadwal dan pengelola proses Node berjalan.
+
+---
+
+## 17. Group Chat & Mention (Fase 8)
+
+### 17.1 Keputusan yang berlaku
+| # | Keputusan |
+|---|---|
+| 1 | Pembuat = **pemilik**. Hanya pemilik yang mengganti nama, menambah, dan mengeluarkan anggota. Anggota boleh mengirim pesan dan keluar sendiri. Bila pemilik keluar, anggota aktif terlama menjadi pemilik. |
+| 2 | Nama 1–50 karakter, maksimal **50 anggota** (termasuk pemilik). |
+| 3 | Anggota baru melihat **seluruh riwayat**; badge unread mulai dari 0. |
+| 4 | Status pesan grup hanya `sent` + **`read_by_count`** (jumlah anggota lain yang sudah membaca). Tidak ada `delivered` per anggota dan tidak ada ACK. |
+| 5 | Unread grup dihitung per anggota dari **kursor baca** (`last_read_message_id`); kursor hanya bergerak maju. |
+| 6 | Thread: Fase 9. Sementara itu `reply_to_id` pada grup **ditolak** (`422`). |
+| 7 | Pesan biasa di grup **tidak membuat baris notifikasi** (badge unread + toast dari `message:new`). Notifikasi dibuat hanya untuk yang **di-@mention** (`chat.mention`). |
+| 8 | Tidak ada pesan sistem; perubahan keanggotaan diumumkan lewat event `conversation:updated`. |
+| 9 | **Mention hanya di grup.** Client mengirim `mention_ids` (id anggota lain); teks `@Nama` hanya tampilan, server tidak mem-parsing isi pesan. Mention tidak berubah saat pesan diedit. |
+
+### 17.2 Perubahan data
+- `conversations`: kolom baru `type` (`direct` | `group`, default `direct`), `name` (grup), `created_by`; `user_one_id`/`user_two_id` NULL untuk grup.
+- `conversation_members` (grup saja): `conversation_id`, `user_id`, `role` (`owner` | `member`), `last_read_message_id`, `joined_at`, `left_at` (NULL = aktif). Unik per (conversation, user); yang keluar lalu ditambahkan lagi memakai baris yang sama.
+- `message_mentions`: `message_id`, `user_id`.
+- `messages.recipient_id` NULL untuk pesan grup.
+- Percakapan **direct tidak punya** baris anggota dan perilakunya tidak berubah.
+
+### 17.3 Objek
+**Conversation (grup)**
+```json
+{
+  "id": 5, "type": "group", "name": "Tim Magang", "peer": null,
+  "owner_id": 1, "members_count": 3,
+  "members": [
+    { "user": { "id": 1, "name": "Andi Pratama", "last_seen_at": null }, "role": "owner" },
+    { "user": { "id": 2, "name": "Budi Santoso", "last_seen_at": null }, "role": "member" }
+  ],
+  "last_message": null, "unread_count": 0,
+  "last_message_at": "2026-10-20T02:00:00Z",
+  "created_at": "2026-10-20T02:00:00Z"
+}
+```
+`last_message_at` pada grup yang masih kosong = `created_at` (agar bisa diurutkan). **Conversation (direct)** mendapat tambahan `"type": "direct"` dan `"name": null`; field lain sama.
+
+**Message** mendapat dua field baru (semua percakapan): `mentions` (array id user; `[]` pada direct) dan `read_by_count` (integer pada pesan grup; `null` pada direct dan pada tombstone). Pada pesan grup `recipient_id` = `null`, `status` selalu `sent`.
+
+### 17.4 Endpoint
+Aturan hak akses: bukan anggota → `404`; anggota biasa pada aksi pemilik → `403`; input salah → `422`.
+
+| Endpoint | Fungsi |
+|---|---|
+| `GET /api/v1/conversations/{id}` | Satu percakapan (direct atau grup) dengan `unread_count`; dipakai setelah `conversation:updated` |
+| `POST /api/v1/groups` `{ name, member_ids: [..] }` | Buat grup (`member_ids` 1–49 user lain, tanpa diri sendiri). `201` + `data.conversation` |
+| `PATCH /api/v1/groups/{id}` `{ name }` | Ganti nama (pemilik) |
+| `POST /api/v1/groups/{id}/members` `{ user_ids: [..] }` | Tambah anggota (pemilik). Yang sudah aktif dilewati; total > 50 → `422` |
+| `DELETE /api/v1/groups/{id}/members/{userId}` | Keluarkan anggota (pemilik). Diri sendiri → `422` (pakai `leave`); bukan anggota → `404` |
+| `POST /api/v1/groups/{id}/leave` | Keluar dari grup. `data: null` |
+| `POST /api/v1/conversations/{id}/messages` | Pesan grup: tambahan `mention_ids` (maks 20; hanya anggota lain; selain itu `422`). `reply_to_id` → `422`. Direct + `mention_ids` → `422` |
+| `POST /api/v1/conversations/{id}/read` | Grup: menggeser kursor ke `up_to_message_id`. `read_count` = jumlah pesan orang lain yang baru terbaca; tanpa kemajuan → `read_count: 0`, `read_at: null`, tanpa event |
+| `GET /api/v1/conversations` | Grup selalu tampil walau kosong; urut `coalesce(last_message_at, created_at)` |
+
+Semua respons grup memakai bentuk §F. Endpoint grup dibatasi: buat 10/menit, lainnya 30/menit.
+
+### 17.5 Event
+| Event | Penerima | Data |
+|---|---|---|
+| `conversation:updated` | semua anggota aktif | `{ conversation_id, reason }`, reason: `created`, `renamed`, `members_added`, `member_removed`, `member_left`. Client memanggil `GET /conversations/{id}` lalu mengganti data percakapan. |
+| `conversation:removed` | user yang keluar/dikeluarkan (semua tabnya) | `{ conversation_id }` → hapus dari daftar, tutup bila sedang dibuka |
+| `group:read` | semua anggota selain pembaca | `{ conversation_id, reader_id, from_message_id, up_to_message_id, read_at }` → untuk pesan dengan `from_message_id < id <= up_to_message_id` dan `sender_id != reader_id`, tambah `read_by_count` sebanyak 1 |
+
+Perubahan perilaku event yang sudah ada pada grup: `message:new` dikirim ke **semua anggota aktif** (termasuk tab pengirim) **tanpa ACK**; `unread:update` dikirim per anggota selain pengirim (angka absolut milik anggota itu); `message:updated`, `message:deleted`, `message:reaction` ke semua anggota; `typing:update` ke **semua anggota lain**; `notification:new` hanya untuk yang di-mention. Event baru bersifat durable (outbox) kecuali `group:read`.
+
+### 17.6 Aturan untuk Frontend
+1. Tampilkan grup dan direct dalam satu daftar; bedakan dengan `type`. Direct memakai `peer`, grup memakai `name` dan `members`.
+2. Pesan di grup: **tanpa reply gaya WhatsApp**; tampilkan hanya `sent` dan "dibaca oleh `read_by_count`".
+3. Saat percakapan terbuka dan terlihat, panggil `POST …/read` seperti direct (id pesan terbaru yang terlihat).
+4. Ganti hitungan `read_by_count` hanya lewat `group:read` atau data REST; jangan menghitung sendiri dari ACK.
+5. Mention: saat mengetik `@`, tampilkan daftar anggota grup lain; kirim `mention_ids`. Sorot `@Nama` pada pesan yang `mentions`-nya memuat user itu. Teks pesan tetap dirender sebagai teks (bukan HTML).
+6. Menu kelola grup (ganti nama, tambah, keluarkan) hanya untuk `owner_id == currentUser.id`; server tetap memeriksa.
+7. Event `conversation:removed` dan `404` pada percakapan grup berarti user tidak lagi menjadi anggota.

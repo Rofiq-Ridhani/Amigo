@@ -120,11 +120,11 @@ class AmigoDoctor extends Command
         }
 
         $missing = array_filter(
-            ['users', 'conversations', 'messages', 'message_reactions', 'attachments', 'notifications', 'outbox_events'],
+            ['users', 'conversations', 'conversation_members', 'messages', 'message_mentions', 'message_reactions', 'attachments', 'notifications', 'outbox_events'],
             fn ($t) => ! Schema::hasTable($t),
         );
 
-        $this->add($missing === [] ? 'OK' : 'GAGAL', 'Tabel lengkap', $missing === [] ? '7 tabel ada' : 'hilang: '.implode(', ', $missing).' (jalankan php artisan migrate)');
+        $this->add($missing === [] ? 'OK' : 'GAGAL', 'Tabel lengkap', $missing === [] ? '9 tabel ada' : 'hilang: '.implode(', ', $missing).' (jalankan php artisan migrate)');
     }
 
     private function checkRedis(): void

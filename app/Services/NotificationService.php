@@ -14,6 +14,8 @@ class NotificationService
 {
     public const TYPE_CHAT_MESSAGE = 'chat.message';
 
+    public const TYPE_CHAT_MENTION = 'chat.mention';
+
     public function __construct(private readonly RealtimePublisher $realtime) {}
 
     /** Buat notifikasi untuk penerima pesan. Panggil DI DALAM transaksi penyimpanan pesan. */
@@ -33,6 +35,50 @@ class NotificationService
                 'url' => '/chat?conversation='.$message->conversation_id,
             ],
         ]);
+    }
+
+    /** Notifikasi "disebut" untuk anggota grup yang di-@mention. Panggil DI DALAM transaksi pesan. */
+    public function createForMention(Message $message, string $senderName, string $groupName, int $userId): ChatNotification
+    {
+        $preview = mb_substr(trim((string) $message->body), 0, 100);
+
+        return ChatNotification::create([
+            'user_id' => $userId,
+            'type' => self::TYPE_CHAT_MENTION,
+            'title' => $senderName.' menyebut Anda di '.$groupName,
+            'body' => $preview !== '' ? $preview : 'Mengirim lampiran',
+            'data' => [
+                'conversation_id' => $message->conversation_id,
+                'message_id' => $message->id,
+                'sender_id' => $message->sender_id,
+                'url' => '/chat?conversation='.$message->conversation_id,
+            ],
+        ]);
+    }
+
+    /**
+     * Tandai notifikasi mention pada grup ini (pesan id <= $upToMessageId) sebagai terbaca.
+     *
+     * @return array<int,string> id notifikasi yang berubah
+     */
+    public function markMentionsRead(int $userId, int $conversationId, int $upToMessageId): array
+    {
+        $matched = ChatNotification::query()
+            ->where('user_id', $userId)
+            ->where('type', self::TYPE_CHAT_MENTION)
+            ->whereNull('read_at')
+            ->get()
+            ->filter(fn (ChatNotification $n) => (int) ($n->data['conversation_id'] ?? 0) === $conversationId
+                && (int) ($n->data['message_id'] ?? 0) <= $upToMessageId);
+
+        if ($matched->isEmpty()) {
+            return [];
+        }
+
+        $now = now();
+        ChatNotification::whereIn('id', $matched->pluck('id'))->update(['read_at' => $now, 'updated_at' => $now]);
+
+        return $matched->pluck('id')->values()->all();
     }
 
     public function unreadCount(int $userId): int
