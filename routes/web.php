@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\MessageController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\ReadStateController;
 use App\Http\Controllers\Api\SocketTokenController;
+use App\Http\Controllers\Api\ThreadController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\ChatController;
@@ -54,6 +55,11 @@ Route::middleware('auth')->group(function () {
             ->whereNumber(['id', 'userId'])
             ->middleware('throttle:30,1');
         Route::post('/groups/{id}/leave', [GroupController::class, 'leave'])->whereNumber('id')->middleware('throttle:30,1');
+
+        // Fase 9: thread
+        Route::get('/conversations/{id}/messages/{msg_id}/thread', [ThreadController::class, 'show'])
+            ->whereNumber(['id', 'msg_id'])
+            ->middleware('throttle:30,1');
 
         // Fase 3: status baca & unread
         Route::post('/conversations/{id}/read', [ReadStateController::class, 'markRead'])

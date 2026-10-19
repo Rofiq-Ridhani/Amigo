@@ -106,6 +106,15 @@ class MessageController extends Controller
                     ->where('conversation_id', $conversation->id)
                     ->whereNull('deleted_at'),
             ],
+            // Thread: hanya grup, pesan asal harus exist dan tidak boleh balasan thread (Fase 9, kontrak §18)
+            'thread_id' => [
+                'nullable',
+                'integer',
+                Rule::exists('messages', 'id')
+                    ->where('conversation_id', $conversation->id)
+                    ->whereNull('deleted_at')
+                    ->whereNull('thread_id'),
+            ],
         ]);
 
         [$message, $created] = $this->messages->send(
@@ -116,6 +125,7 @@ class MessageController extends Controller
             isset($data['reply_to_id']) ? (int) $data['reply_to_id'] : null,
             $data['attachment_ids'] ?? [],
             $data['mention_ids'] ?? [],
+            isset($data['thread_id']) ? (int) $data['thread_id'] : null,
         );
 
         return ApiResponse::success(

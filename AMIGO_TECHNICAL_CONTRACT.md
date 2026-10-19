@@ -882,6 +882,7 @@ Socket.IO **Connection State Recovery tidak diandalkan** (tidak ada jaminan lint
 | CC-006 | 2026-10-17 | `0.2.5` (Fase 6): (a) jenis file ditentukan dari ISI file (finfo); ekstensi/Content-Type client tidak dipercaya, dan file disimpan dengan ekstensi hasil deteksi; `original_name` hanya untuk tampilan (path dibuang, karakter kontrol dihapus, maks 255); (b) rekaman `audio/webm` terdeteksi sebagai `video/webm` oleh finfo, maka dianggap audio bila client mengirim Content-Type `audio/webm` atau ekstensi `.weba` (klasifikasi saja, bukan keamanan); (c) kode error upload: `413 PAYLOAD_TOO_LARGE` (melebihi batas jenis/ server), `415 UNSUPPORTED_MEDIA_TYPE` (jenis tidak diizinkan/gambar rusak), `422 VALIDATION_ERROR` (tanpa file, file kosong, dimensi gambar > 100 juta piksel); (d) `POST …/messages`: `body` boleh kosong bila ada `attachment_ids` dan sebaliknya; lampiran harus milik pengirim, belum terlampir, tanpa duplikat, maks 5, jika tidak `422` pada `attachment_ids`; kirim ulang dengan `client_uuid` yang sama tetap `200` walau lampiran sudah terpakai; (e) hapus pesan menghapus baris `attachments` dan file SECARA SINKRON (bukan lewat job); (f) lampiran pending > 24 jam dihapus oleh `php artisan attachments:prune` (dijadwalkan tiap jam; butuh `php artisan schedule:work` atau cron); (g) `…/content`: `Content-Type` dari hasil deteksi, `X-Content-Type-Options: nosniff`, `Cache-Control: private, max-age=3600`, mendukung `Range`; gambar/video/audio tampil `inline`, dokumen selalu `attachment`, `?download=1` memaksa unduh; pesan terhapus = `404`; (h) tidak ada perubahan nama field/event/endpoint, dan Node tidak berubah (media tidak lewat Socket.IO) | Backend (beri tahu Frontend) |
 | CC-007 | 2026-10-18 | `0.3.0` (Fase 7, penguatan): (a) **Outbox**: event durable (`message:new|updated|deleted|reaction|read`, `notification:new`) dicatat di `outbox_events` tepat sebelum dipublish dan ditandai terkirim bila Redis menerima; yang gagal dikirim ulang oleh `php artisan outbox:flush` (tiap menit, berhenti di kegagalan pertama, memakai `event_id` yang sama); yang belum terkirim > 30 menit dibuang; terkirim > 24 jam dibersihkan. `unread:update` dan `notification:read` TIDAK di-outbox (snapshot angka absolut; dipulihkan `sync:required` + polling §H.6). DEVIASI dari §J: catatan outbox ditulis setelah commit pesan, bukan dalam transaksi yang sama — menutup kasus Redis mati, tidak menutup kasus proses mati di antara commit dan pencatatan (client resync); (b) rate limit tambahan: registrasi 10/menit/IP; (c) header keamanan di semua respons web/API: `X-Content-Type-Options`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`; CSP via `CHAT_CSP_MODE` = `off` / `report-only` (DEFAULT, tidak memblokir) / `enforce`; saat ini `script-src` memuat `'unsafe-inline'` karena `window.AMIGO` inline (§B.3); respons `…/attachments/{id}/content` memakai `Content-Security-Policy: default-src 'none'; sandbox`; (d) Node: maksimal 10 koneksi per akun (koneksi ke-11 → `connect_error` `too_many_connections`), payload event maksimal 64 KB (lebih besar → koneksi diputus), handshake harus selesai dalam 10 detik, kegagalan tak terduga pada satu handler tidak mematikan server; (e) timeout koneksi/baca Redis di Laravel 1,5 detik (`REDIS_TIMEOUT`); (f) perintah `php artisan amigo:doctor` memeriksa konfigurasi, database, Redis, dan server Socket.IO; (g) tidak ada perubahan nama field/event/endpoint | Backend (beri tahu Frontend) |
 | CC-008 | 2026-10-20 | `0.4.0` (Fase 8, grup + mention; rincian di §17): (a) percakapan baru bertipe `group`; Conversation, Message, dan beberapa event mendapat field tambahan (hanya MENAMBAH, tidak ada yang diubah/dihapus); (b) endpoint baru `GET /conversations/{id}`, `POST /groups`, `PATCH /groups/{id}`, `POST /groups/{id}/members`, `DELETE /groups/{id}/members/{userId}`, `POST /groups/{id}/leave`; (c) event baru `conversation:updated`, `conversation:removed`, `group:read`; (d) `POST …/messages` menerima `mention_ids` (hanya grup) dan MENOLAK `reply_to_id` pada grup (balasan grup = thread, Fase 9); (e) `conversations.user_one_id/user_two_id` dan `messages.recipient_id` kini boleh NULL (khusus grup); (f) typing dan participants internal mendukung banyak anggota; (g) chat pribadi dan reply gaya WhatsApp TIDAK berubah | Backend (beri tahu Frontend) |
+| CC-009 | 2026-10-21 | `0.5.0` (Fase 9, thread; rincian di §18): (a) `messages.thread_id` (nullable FK → `messages.id`); balasan thread memiliki `thread_id`, pesan asal NULL; (b) endpoint baru `GET /api/v1/conversations/{id}/messages/{msg_id}/thread` (riwayat thread + pesan asal); `POST …/messages` menerima `thread_id` opsional (hanya grup, pesan asal harus ada dan bukan balasan thread); (c) event baru `thread:message:new`, `thread:message:updated`, `thread:message:deleted`, `thread:message:reaction`, `thread:read` → dikirim HANYA ke peserta thread (penulis asal + yang pernah balas); (d) notifikasi baru `chat.mention_thread` untuk balasan thread; (e) thread flat (satu tingkat), hanya di grup, unread dihitung seperti pesan biasa; (f) chat pribadi TIDAK berubah | Backend (beri tahu Frontend) |
 
 ## 15. Status Implementasi (diperbarui Backend tiap fase)
 
@@ -900,9 +901,9 @@ Socket.IO **Connection State Recovery tidak diandalkan** (tidak ada jaminan lint
 | §D.6, §G `POST /api/v1/attachments`, `DELETE /api/v1/attachments/{id}`, `GET /api/v1/attachments/{id}/content`; `attachment_ids` pada `POST …/messages`; `attachments` pada Message | ✅ Fase 6 |
 | §I, §J penguatan: rate limit, outbox + `outbox:flush`, header keamanan + CSP, batas koneksi Node, `amigo:doctor` | ✅ Fase 7 |
 | §17 grup: buat/ganti nama/tambah/keluarkan/keluar, pesan grup, unread & "dibaca oleh", mention, typing grup | ✅ Fase 8 |
-| §17 thread (balasan bergaya Slack di grup) | ⏳ Fase 9 |
+| §18 thread: `GET …/thread`, `POST …/messages` + `thread_id`, event `thread:message:*`, `thread:read`, notifikasi `chat.mention_thread` | ✅ Fase 9 |
 
-**Seluruh fase MVP (1–7) selesai di sisi Backend.** Fase 8 (grup + mention) selesai; Fase 9 (thread) berikutnya. Handshake antar-user (D-03) tetap opsional dan hanya dikerjakan bila pembimbing memintanya. (D-07 mention: dikerjakan di Fase 8, khusus grup.)
+**Seluruh fase MVP (1–7) selesai di sisi Backend.** Fase 8 (grup + mention) dan Fase 9 (thread) selesai. Handshake antar-user (D-03) tetap opsional dan hanya dikerjakan bila pembimbing memintanya.
 
 ---
 
@@ -989,3 +990,92 @@ Perubahan perilaku event yang sudah ada pada grup: `message:new` dikirim ke **se
 5. Mention: saat mengetik `@`, tampilkan daftar anggota grup lain; kirim `mention_ids`. Sorot `@Nama` pada pesan yang `mentions`-nya memuat user itu. Teks pesan tetap dirender sebagai teks (bukan HTML).
 6. Menu kelola grup (ganti nama, tambah, keluarkan) hanya untuk `owner_id == currentUser.id`; server tetap memeriksa.
 7. Event `conversation:removed` dan `404` pada percakapan grup berarti user tidak lagi menjadi anggota.
+
+---
+
+## 18. Thread (Balasan Bergaya Slack, Fase 9)
+
+### 18.1 Keputusan yang berlaku
+
+| # | Keputusan |
+|---|---|
+| 1 | **Thread hanya di grup**; direct tidak memiliki thread. |
+| 2 | Struktur **flat**: membalas balasan masuk thread yang sama (tidak bercabang). |
+| 3 | Pesan asal thread adalah pesan normal grup (tidak ada flag khusus di table). Balasan thread punya `thread_id = id` pesan asal. |
+| 4 | Notifikasi thread: penulis pesan asal + semua yang pernah balas di thread itu (penerima subset anggota grup). Direct mention Fase 8 tetap hanya untuk pesan biasa grup. |
+| 5 | Unread thread: dihitung seperti unread pesan biasa (per anggota, kursor); tidak ada badge terpisah unread thread. |
+| 6 | Edit/hapus/reaksi di thread berlaku seperti pesan biasa. |
+
+### 18.2 Perubahan data
+
+- `messages`: kolom baru `thread_id` (bigint unsigned nullable, FK → `messages.id` ON DELETE CASCADE). `thread_id` NULL = pesan biasa (group atau direct); `thread_id` = id pesan asal (thread root tidak punya `reply_to_id`, balasan thread memiliki `reply_to_id` opsional jika ingin merujuk pesan lain dalam thread; biasanya NULL untuk balasan langsung ke root).
+- Tidak ada tabel thread terpisah; thread diidentifikasi dari `thread_id`.
+
+### 18.3 Objek
+
+**Message (balasan thread)**
+```json
+{
+  "id": 102, "conversation_id": 5, "sender_id": 2, "client_uuid": "...",
+  "thread_id": 100, "reply_to_id": null,
+  "body": "Sepakat, lanjut minggu depan", "mentions": [],
+  "status": "sent", "read_by_count": 1,
+  "revision": 1, "delivered_at": "2026-10-20T02:10:00Z",
+  "read_at": null, "edited_at": null,
+  "attachments": [], "reactions": []
+}
+```
+
+**Thread view (GET /conversations/{id}/messages/{msg_id}/thread)**
+```json
+{
+  "success": true,
+  "data": {
+    "thread_root": { Message (pesan asal, tanpa thread_id) },
+    "messages": [ Message (balasan dalam urutan id), ... ]
+  },
+  "meta": {
+    "has_more_before": false, "oldest_id": 101, "newest_id": 104,
+    "has_more": false, "server_time": "2026-10-20T02:15:00Z"
+  }
+}
+```
+
+Pesan asal thread tidak punya `thread_id` (NULL); balasan punya `thread_id = id` asal. Client menampilkan "N balasan" pada pesan asal berdasarkan count balasan dari state (atau bisa dihitung saat resync).
+
+### 18.4 Endpoint
+
+Aturan hak akses: sama seperti pesan biasa (bukan anggota aktif → 404).
+
+| Endpoint | Fungsi |
+|---|---|
+| `GET /api/v1/conversations/{id}/messages/{msg_id}/thread` | Riwayat thread (pesan asal + balasan). Query: `limit` (default 30), `before_id`, `updated_since`. `401` → client resync, ambil ulang; `404` → pesan tidak ada/bukan anggota/bukan thread root. |
+| `POST /api/v1/conversations/{id}/messages` | Tambahan: `thread_id` (opsional; integer; pesan yang di-thread; harus ada di percakapan itu dan `thread_id`-nya sendiri NULL). Client mengirim body + `thread_id`. Validasi: jika `thread_id` ada, `reply_to_id` opsional (default NULL dalam thread); jika `thread_id` NULL dan `reply_to_id` ada → `422` (balasan hanya lewat thread, Fase 9). |
+
+Rate limit: 30 per menit sama seperti pesan normal.
+
+### 18.5 Event
+
+| Event | Penerima | ACK | Data |
+|---|---|---|---|
+| `thread:message:new` | penulis asal thread + semua yang pernah balas dalam thread | No | `{ "message": Message, "thread_id": 100 }` → Upsert dalam panel thread (jangan ke obrolan utama). Jika panel thread ditutup, biarkan; ACK untuk offline. |
+| `thread:message:updated` | peserta thread | – | `{ "message": Message, "thread_id": 100 }` → Ganti hanya jika `revision` ≥ yang dimiliki |
+| `thread:message:deleted` | peserta thread | – | `{ "conversation_id", "message_id", "thread_id", "revision", "deleted_at" }` → Ubah menjadi tombstone dalam thread |
+| `thread:message:reaction` | peserta thread | – | `{ "conversation_id", "message_id", "thread_id", "revision", "reactions": [ ... ] }` → Ganti reaksi |
+| `thread:read` | peserta thread selain pembaca | – | `{ "conversation_id", "thread_id", "reader_id", "up_to_message_id", "read_at" }` → Naikkan `read_by_count` pada balasan dengan `id ≤ up_to_message_id` dan `sender_id != reader_id` |
+| `notification:new` | penulis asal + peserta thread | **Ya** | Type: `chat.mention_thread`. Payload: `{ "notification": Notification, "unread_count": 3 }`. `notification.data` punya `thread_id`. |
+
+Event `message:new`, `message:updated` dll. pada pesan biasa grup **tidak berubah**; thread events terpisah. Unread thread masuk `unread:update` seperti biasa (tidak ada pemisahan).
+
+### 18.6 Aturan untuk Frontend
+
+1. Saat membuka percakapan grup, tampilkan pesan biasa. Pesan dengan balasan → tampilkan "N balasan" (link); klik → buka panel thread samping.
+2. Di panel thread: tampilkan pesan asal (read-only), kemudian balasan dalam daftar (bisa scroll, load lebih lama). Input box di bawah untuk balas.
+3. Kirim balasan thread: `POST /conversations/{id}/messages` dengan `thread_id = id` asal. Sistem menolak `reply_to_id` saat group (event berisi thread root saja).
+4. Tandai dibaca di thread: saat user membuka panel thread, panggil `POST /conversations/{id}/read` dengan `up_to_message_id` = balasan terbaru terlihat (seperti biasa, tak ada `thread_id`). Unread mereka turun, event `group:read` dipancarkan.
+5. Event `thread:message:new` → upsert di panel thread yang terbuka (jangan beri notifikasi toast, cukup append/refresh); ACK secara otomatis (bukan offline).
+6. `notification:new` tipe `chat.mention_thread` → toast "X membalas di thread [grup]"; klik → buka percakapan + panel thread pada thread_id tersebut.
+7. Editing/reaksi di thread: gunakan endpoint `/messages/{id}` yang sama seperti pesan biasa. Event `thread:message:*` dikirim ke thread room saja, bukan obrolan utama.
+8. Hapus/edit jendela 15 menit berlaku sama (§D.6, §D.7).
+9. Jika panel thread dibuka dan `thread_id` tidak ada (di-resync) → tampilkan pesan error "Thread tidak ditemukan" atau reload.
+10. Typing di thread: client kirim `typing:start { conversation_id, thread_id }` (baru). Node emit `typing:update { conversation_id, thread_id, user_id, is_typing }` ke peserta thread saja (subset).
